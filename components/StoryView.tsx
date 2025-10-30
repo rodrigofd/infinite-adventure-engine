@@ -52,34 +52,51 @@ const StoryView: React.FC<StoryViewProps> = ({ session, currentIndex, onSelectCh
 
   return (
     <main className="w-full md:w-2/3 lg:w-3/4 flex flex-col h-full animate-fadeIn">
-      <div className="flex-grow bg-slate-800/30 backdrop-blur-sm rounded-lg border border-slate-700 overflow-hidden p-4 md:p-6 shadow-2xl relative flex flex-col">
+      <div className="flex-grow rounded-lg border border-slate-700 overflow-hidden shadow-2xl grid">
+        {/* All children are placed in the same grid cell (1,1) to create layers */}
+        {/* Layer 1: Image */}
+        <img
+          key={currentStep.id}
+          src={currentStep.imageUrl}
+          alt="Story scene"
+          className="col-start-1 row-start-1 w-full h-full object-cover rounded-lg"
+        />
+        
+        {/* Layer 2: Gradient */}
+        <div className="col-start-1 row-start-1 bg-gradient-to-t from-slate-900/80 via-slate-900/40 to-transparent pointer-events-none"></div>
+
+        {/* Layer 3: UI (Text and Buttons) */}
+        <div className="col-start-1 row-start-1 relative flex flex-col justify-between">
+          <div className="flex justify-end p-4">
+            <div className="flex gap-2">
+              <button onClick={onPrev} disabled={currentIndex === 0 || gameState === 'LOADING'} className="bg-black/50 p-2 rounded-full text-white hover:bg-black/80 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+                <ChevronLeftIcon className="w-6 h-6" />
+              </button>
+              <button onClick={onNext} disabled={isLastStepInHistory || gameState === 'LOADING'} className="bg-black/50 p-2 rounded-full text-white hover:bg-black/80 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
+                <ChevronRightIcon className="w-6 h-6" />
+              </button>
+            </div>
+          </div>
+          
+          <div className="p-4 md:p-6 w-full h-[35%] flex flex-col">
+              <div 
+                  ref={scrollRef}
+                  className="bg-slate-900/70 backdrop-blur-[6px] rounded-lg p-4 border border-slate-700/50 overflow-y-auto custom-scrollbar shadow-2xl flex-grow"
+              >
+                  <p className="text-gray-200 whitespace-pre-wrap leading-relaxed text-base md:text-lg">
+                      {currentStep.story}
+                  </p>
+              </div>
+          </div>
+        </div>
+
+        {/* Layer 4: Loading Overlay */}
         {gameState === 'LOADING' && (
-          <div className="absolute inset-0 bg-slate-900/80 flex flex-col justify-center items-center z-20 rounded-lg">
+          <div className="col-start-1 row-start-1 bg-slate-900/80 backdrop-blur-sm flex flex-col justify-center items-center z-30 rounded-lg">
             <LoadingSpinner />
             <p className="mt-4 text-lg text-gray-300">{loadingMessage}</p>
           </div>
         )}
-        <div className="flex-shrink-0 relative">
-          <img
-            key={currentStep.id}
-            src={currentStep.imageUrl}
-            alt="Story scene"
-            className="w-full h-48 sm:h-64 md:h-80 object-cover rounded-lg shadow-lg border-2 border-slate-600"
-          />
-           <div className="absolute bottom-2 right-2 flex gap-2">
-            <button onClick={onPrev} disabled={currentIndex === 0 || gameState === 'LOADING'} className="bg-black/50 p-2 rounded-full text-white hover:bg-black/80 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
-              <ChevronLeftIcon className="w-6 h-6" />
-            </button>
-            <button onClick={onNext} disabled={isLastStepInHistory || gameState === 'LOADING'} className="bg-black/50 p-2 rounded-full text-white hover:bg-black/80 disabled:opacity-50 disabled:cursor-not-allowed transition-all">
-              <ChevronRightIcon className="w-6 h-6" />
-            </button>
-          </div>
-        </div>
-        <div ref={scrollRef} className="flex-grow overflow-y-auto pr-2 mt-6 custom-scrollbar">
-             <p className="text-gray-300 whitespace-pre-wrap leading-relaxed">
-                {currentStep.story}
-            </p>
-        </div>
       </div>
       <div className="flex-shrink-0 pt-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

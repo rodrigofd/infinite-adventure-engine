@@ -1,3 +1,4 @@
+
 import React, { useState, useMemo, useRef } from 'react';
 import { StoryStep } from '../types';
 import Tooltip, { TooltipData } from './Tooltip';
@@ -59,17 +60,15 @@ export const ComicStrip: React.FC<ComicStripProps> = ({ steps, currentIndex, onT
     };
 
     const handleTooltipWheelScroll = (e: React.WheelEvent) => {
-        if (tooltipContentRef.current) {
-          // Unconditionally prevent the default browser action (scrolling the page)
-          // and stop the event from bubbling up to parent elements.
-          // This ensures that as long as the tooltip is visible, mouse scrolling
-          // will not affect the underlying page, solving the "pass-through" issue.
-          e.preventDefault();
-          e.stopPropagation();
+        if (tooltipData.visible && tooltipContentRef.current) {
+            // Prevent the default page scroll unconditionally when the tooltip is active.
+            e.preventDefault();
+            e.stopPropagation();
     
-          // Manually adjust the scrollTop of the tooltip's content.
-          // The browser will automatically clamp the value so it doesn't go below 0 or above the maximum scroll height.
-          tooltipContentRef.current.scrollTop += e.deltaY;
+            // Apply the scroll to the tooltip content.
+            // The browser will handle not scrolling past the boundaries.
+            // The preventDefault() call above will stop the event from bubbling up.
+            tooltipContentRef.current.scrollTop += e.deltaY;
         }
     };
 

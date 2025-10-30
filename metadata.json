@@ -1,5 +1,5 @@
 {
-  "name": "Infinite Adventure Engine",
+  "name": "SagaForge",
   "description": "An AI-powered, text-based choose-your-own-adventure game where your choices genuinely alter the plot. Features real-time generated images with a consistent art style and a dynamic sidebar that tracks your inventory and quests.",
   "requestFramePermissions": []
 }

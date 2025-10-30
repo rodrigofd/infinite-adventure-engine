@@ -11,6 +11,7 @@ export interface GeminiResponse {
   inventory: Array<{ name: string; imagePrompt: string }>;
   currentQuest: string;
   imagePrompt: string;
+  mood: string;
 }
 
 export interface StoryStep {
@@ -20,6 +21,7 @@ export interface StoryStep {
   choices: string[];
   inventory: InventoryItem[];
   currentQuest: string;
+  mood: string;
   choiceMade?: string;
 }
 
@@ -27,6 +29,7 @@ export interface GameSession {
   id: string;
   title: string;
   prompt: string;
+  visualStyle: string;
   bannerUrl: string;
   language: 'en' | 'es' | 'pt';
   history: StoryStep[];

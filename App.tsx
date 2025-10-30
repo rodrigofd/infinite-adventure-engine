@@ -1,18 +1,31 @@
+
+
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import ReactDOM from 'react-dom';
 import Sidebar from './components/Sidebar';
 import StoryView from './components/StoryView';
 import { GameState, StoryStep, GameSession } from './types';
-import { generateAdventureStart, generateNextStep, generateRandomPrompt } from './services/geminiService';
-import { BookOpenIcon, WandIcon, TrashIcon, SparklesIcon, HomeIcon, PlayIcon, SpeakerOnIcon, SpeakerOffIcon } from './components/Icons';
+import { generateAdventureStart, generateNextStep, generateRandomPrompt, generateRandomVisualStylePrompt } from './services/geminiService';
+import { WandIcon, TrashIcon, SparklesIcon, HomeIcon, PlayIcon, SpeakerOnIcon, SpeakerOffIcon, PaintBrushIcon, ArrowDownTrayIcon, ArrowUpTrayIcon } from './components/Icons';
 import LoadingSpinner from './components/LoadingSpinner';
 import { translations } from './lib/translations';
 import LanguageSelector from './components/LanguageSelector';
 import Tooltip, { TooltipData } from './components/Tooltip';
+import AudioManager from './components/AudioManager';
 
 const SESSIONS_KEY = 'infinite-adventure-sessions';
 
 // Let TypeScript know about the global localforage object from the CDN script
 declare const localforage: any;
+
+const predefinedStyles = [
+  { id: 'fantasy', name: 'Fantasy Art', prompt: 'Vibrant, detailed digital painting, high fantasy theme, dramatic lighting, epic.', imageUrl: '/assets/style-fantasy-art.png' },
+  { id: 'sci-fi', name: 'Sci-Fi Comic', prompt: 'Retro sci-fi comic book art, bold lines, halftone dots, vibrant pulp aesthetic.', imageUrl: '/assets/style-sci-fi.png' },
+  { id: 'anime', name: 'Anime', prompt: 'Lush, hand-painted anime style reminiscent of Studio Ghibli, whimsical, soft colors, detailed backgrounds.', imageUrl: '/assets/style-anime.png' },
+  { id: 'pixel', name: 'Pixel Art', prompt: 'Crisp 16-bit pixel art, detailed sprites and environments, limited color palette, retro gaming aesthetic.', imageUrl: '/assets/style-pixel-art.png' },
+];
+const DEFAULT_STYLE_ID = 'fantasy';
+
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>('SESSION_SELECT');
@@ -22,11 +35,31 @@ const App: React.FC = () => {
   
   const [language, setLanguage] = useState<'en' | 'es' | 'pt'>('es');
   const [error, setError] = useState<string | null>(null);
+  const [importSuccessMessage, setImportSuccessMessage] = useState<string | null>(null);
+  
+  // Main prompt state
   const [playerInput, setPlayerInput] = useState<string>('');
   const [isGeneratingIdea, setIsGeneratingIdea] = useState(false);
-  const [isNarrationEnabled, setIsNarrationEnabled] = useState(false);
   const [isPromptAiGenerated, setIsPromptAiGenerated] = useState(false);
+  
+  // Visual style prompt state
+  const [visualStyleSelection, setVisualStyleSelection] = useState<string>(DEFAULT_STYLE_ID);
+  const [customVisualStyle, setCustomVisualStyle] = useState<string>('');
+  const [isGeneratingStyleIdea, setIsGeneratingStyleIdea] = useState(false);
+  const [isCustomStyleAiGenerated, setIsCustomStyleAiGenerated] = useState(false);
+
+  const [isNarrationEnabled, setIsNarrationEnabled] = useState(false);
+  const [musicVolume, setMusicVolume] = useState(0.3);
+  const [isMusicMuted, setIsMusicMuted] = useState(false);
   const [initialLoadingMessage, setInitialLoadingMessage] = useState('');
+
+  // Audio state
+  const [hasInteracted, setHasInteracted] = useState(false);
+  const [showVolumeSlider, setShowVolumeSlider] = useState(false);
+  const musicButtonRef = useRef<HTMLButtonElement>(null);
+  const volumeSliderRef = useRef<HTMLDivElement>(null);
+  const [sliderPosition, setSliderPosition] = useState({ top: 0, right: 0 });
+  const portalRoot = document.getElementById('portals');
 
 
   const [showBranchConfirm, setShowBranchConfirm] = useState<string | null>(null);
@@ -34,11 +67,14 @@ const App: React.FC = () => {
   
   const [tooltipData, setTooltipData] = useState<TooltipData>({ visible: false, content: { text: '' }, x: 0, y: 0 });
   const promptTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const customStyleTextareaRef = useRef<HTMLTextAreaElement>(null);
   const tooltipContentRef = useRef<HTMLDivElement>(null);
 
-  const t = useCallback((key: keyof typeof translations.en) => {
-    return translations[language][key] || translations.en[key];
+  const t = useCallback((key: keyof typeof translations.en): string | string[] => {
+    const translation = translations[language][key] || translations.en[key];
+    return translation;
   }, [language]);
+  
 
   // Load sessions from localForage on initial render
   useEffect(() => {
@@ -57,10 +93,25 @@ const App: React.FC = () => {
     loadSessions();
   }, []);
 
+  // Clear error/success messages after a delay
+  useEffect(() => {
+    if (error) {
+        const timer = setTimeout(() => setError(null), 5000);
+        return () => clearTimeout(timer);
+    }
+  }, [error]);
+
+  useEffect(() => {
+    if (importSuccessMessage) {
+        const timer = setTimeout(() => setImportSuccessMessage(null), 5000);
+        return () => clearTimeout(timer);
+    }
+  }, [importSuccessMessage]);
+
   // Set a random loading message when starting a new game
   useEffect(() => {
     if (gameState === 'LOADING' && !activeSession) {
-      const messages = t('initialLoadingPrompts') as unknown as string[];
+      const messages = t('initialLoadingPrompts') as string[];
       setInitialLoadingMessage(messages[Math.floor(Math.random() * messages.length)]);
     }
   }, [gameState, activeSession, t]);
@@ -98,6 +149,14 @@ const App: React.FC = () => {
       promptTextareaRef.current.setSelectionRange(len, len);
     }
   }, [isPromptAiGenerated, playerInput]);
+  
+  useEffect(() => {
+    if (isCustomStyleAiGenerated && customStyleTextareaRef.current) {
+      customStyleTextareaRef.current.focus();
+      const len = customStyleTextareaRef.current.value.length;
+      customStyleTextareaRef.current.setSelectionRange(len, len);
+    }
+  }, [isCustomStyleAiGenerated, customVisualStyle]);
 
 
   const handleGenerateIdea = useCallback(async () => {
@@ -110,21 +169,47 @@ const App: React.FC = () => {
         setIsPromptAiGenerated(true); 
     } catch (e) {
         console.error("Failed to generate prompt idea", e);
-        setError(t('errorTangled'));
+        setError(t('errorTangled') as string);
     } finally {
         setIsGeneratingIdea(false);
     }
   }, [playerInput, language, t, isPromptAiGenerated]);
 
+  const handleGenerateStyleIdea = useCallback(async () => {
+    setIsGeneratingStyleIdea(true);
+    setError(null);
+    try {
+        const promptToUse = isCustomStyleAiGenerated ? '' : customVisualStyle;
+        const generatedPrompt = await generateRandomVisualStylePrompt(promptToUse, language);
+        setCustomVisualStyle(generatedPrompt);
+        setIsCustomStyleAiGenerated(true); 
+    } catch (e) {
+        console.error("Failed to generate style idea", e);
+        setError(t('errorTangled') as string);
+    } finally {
+        setIsGeneratingStyleIdea(false);
+    }
+  }, [customVisualStyle, language, t, isCustomStyleAiGenerated]);
+
   const handleStartNewGame = useCallback(async () => {
     if (!playerInput.trim()) {
-      setError(t('describePrompt'));
+      setError(t('describePrompt') as string);
       return;
     }
     setGameState('LOADING');
     setError(null);
+    setHasInteracted(true); // Unlock audio
+
+    let finalVisualStyle = '';
+    if (visualStyleSelection === 'custom') {
+      finalVisualStyle = customVisualStyle.trim() || predefinedStyles.find(s => s.id === DEFAULT_STYLE_ID)!.prompt;
+    } else {
+      finalVisualStyle = predefinedStyles.find(s => s.id === visualStyleSelection)!.prompt;
+    }
+
+
     try {
-      const { scene, imageUrl, bannerUrl } = await generateAdventureStart(playerInput, language);
+      const { scene, imageUrl, bannerUrl } = await generateAdventureStart(playerInput, language, finalVisualStyle);
       const firstStep: StoryStep = {
         id: crypto.randomUUID(),
         imageUrl,
@@ -132,11 +217,13 @@ const App: React.FC = () => {
         choices: scene.choices,
         inventory: scene.inventory,
         currentQuest: scene.currentQuest,
+        mood: scene.mood,
       };
       const newSession: GameSession = {
         id: crypto.randomUUID(),
         title: scene.title,
         prompt: playerInput,
+        visualStyle: finalVisualStyle,
         bannerUrl,
         language,
         createdAt: Date.now(),
@@ -149,10 +236,10 @@ const App: React.FC = () => {
       setIsPromptAiGenerated(false);
     } catch (e) {
       console.error(e);
-      setError(t('errorStart'));
+      setError(t('errorStart') as string);
       setGameState('SESSION_SELECT');
     }
-  }, [playerInput, language, t]);
+  }, [playerInput, language, t, visualStyleSelection, customVisualStyle]);
 
   // Keyboard shortcuts handler
   useEffect(() => {
@@ -160,14 +247,13 @@ const App: React.FC = () => {
       if (e.key === 'Escape') {
         setShowBranchConfirm(null);
         setSessionToDelete(null);
+        setShowVolumeSlider(false);
       }
-      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && document.activeElement === promptTextareaRef.current) {
-        e.preventDefault();
-        handleStartNewGame();
-      }
-      if (e.key === 'F1' && gameState === 'SESSION_SELECT') {
-        e.preventDefault();
-        handleGenerateIdea();
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        if (document.activeElement === promptTextareaRef.current || document.activeElement === customStyleTextareaRef.current) {
+            e.preventDefault();
+            handleStartNewGame();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -176,6 +262,7 @@ const App: React.FC = () => {
 
 
   const processChoice = useCallback(async (choice: string, historySlice: StoryStep[]) => {
+    if (!activeSession) return;
     setGameState('LOADING');
     setError(null);
 
@@ -188,26 +275,25 @@ const App: React.FC = () => {
     };
 
     try {
-        const { scene, imageUrl } = await generateNextStep(updatedHistorySlice, choice, language);
+        const { scene, imageUrl } = await generateNextStep(updatedHistorySlice, choice, language, activeSession.visualStyle);
         const newStep: StoryStep = { 
             id: crypto.randomUUID(), 
             imageUrl, 
             story: scene.story,
             choices: scene.choices,
             inventory: scene.inventory,
-            currentQuest: scene.currentQuest
+            currentQuest: scene.currentQuest,
+            mood: scene.mood,
         };
         
         const newHistory = [...updatedHistorySlice, newStep];
         
-        if (activeSession) {
-            setActiveSession({ ...activeSession, history: newHistory });
-            setCurrentStepIndex(newHistory.length - 1);
-        }
+        setActiveSession({ ...activeSession, history: newHistory });
+        setCurrentStepIndex(newHistory.length - 1);
         setGameState('PLAYING');
     } catch (e) {
         console.error(e);
-        setError(t('errorTangled'));
+        setError(t('errorTangled') as string);
         setGameState('PLAYING');
     } finally {
         setShowBranchConfirm(null);
@@ -238,6 +324,7 @@ const App: React.FC = () => {
   const handleResumeSession = (sessionId: string) => {
     const sessionToResume = sessions.find(s => s.id === sessionId);
     if (sessionToResume) {
+      setHasInteracted(true); // Unlock audio
       setLanguage(sessionToResume.language);
       setActiveSession(sessionToResume);
       setCurrentStepIndex(sessionToResume.history.length - 1);
@@ -268,104 +355,302 @@ const App: React.FC = () => {
   };
   
   const handleTooltipWheelScroll = (e: React.WheelEvent) => {
-    if (tooltipContentRef.current) {
-      // Unconditionally prevent the default browser action (scrolling the page)
-      // and stop the event from bubbling up to parent elements.
-      // This ensures that as long as the tooltip is visible, mouse scrolling
-      // will not affect the underlying page, solving the "pass-through" issue.
+    if (tooltipData.visible && tooltipContentRef.current) {
+      // Prevent the default page scroll unconditionally when the tooltip is active.
       e.preventDefault();
       e.stopPropagation();
 
-      // Manually adjust the scrollTop of the tooltip's content.
-      // The browser will automatically clamp the value so it doesn't go below 0 or above the maximum scroll height.
+      // Apply the scroll to the tooltip content.
+      // The browser will handle not scrolling past the boundaries.
+      // The preventDefault() call above will stop the event from bubbling up.
       tooltipContentRef.current.scrollTop += e.deltaY;
     }
   };
 
+  const sanitizeFilename = (name: string) => {
+    return name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+  };
 
-  const renderSessionSelect = () => (
-    <div className="w-full max-w-4xl mx-auto text-center animate-fadeIn p-4">
-        <div className="bg-slate-800/50 p-6 md:p-8 rounded-xl shadow-2xl border border-slate-700 backdrop-blur-sm relative">
-            <div className="absolute top-4 right-4 z-10">
-                <LanguageSelector language={language} setLanguage={setLanguage} />
-            </div>
-            <BookOpenIcon className="w-20 h-20 mx-auto text-amber-400 mb-4" />
-            <h1 className="text-4xl md:text-5xl font-bold text-white mb-2">{t('title')}</h1>
-            
-            {sessions.length > 0 && (
-                <div className="my-8">
-                    <h2 className="text-2xl font-bold text-teal-300 mb-4">{t('sessions')}</h2>
-                    <div className="space-y-3 max-h-72 overflow-y-auto pr-2 custom-scrollbar">
-                        {sessions.sort((a,b) => b.createdAt - a.createdAt).map(session => (
-                            <div 
-                                key={session.id} 
-                                className="bg-slate-900/70 rounded-lg flex items-center transition-all duration-300 border-2 border-transparent hover:border-amber-400 hover:bg-slate-800/80 group cursor-pointer"
-                                onMouseMove={(e) => handleMouseMove(e, session.prompt)}
-                                onMouseLeave={handleMouseLeave}
-                                onWheel={handleTooltipWheelScroll}
-                                onClick={() => handleResumeSession(session.id)}
-                            >
-                                <img src={session.bannerUrl} alt="Adventure banner" className="w-24 h-24 object-cover rounded-l-lg flex-shrink-0" />
-                                <div className="flex-1 min-w-0 p-3 text-left">
-                                    <p className="font-semibold text-lg text-white truncate">{session.title}</p>
-                                    <p className="text-sm text-slate-400 truncate">{session.prompt}</p>
-                                    <p className="text-xs text-slate-500 mt-1">{new Date(session.createdAt).toLocaleString()}</p>
-                                </div>
-                                <div className="flex gap-2 flex-shrink-0 p-3 pointer-events-auto" onClick={e => e.stopPropagation()}>
-                                    <button onClick={() => handleResumeSession(session.id)} title={t('resume')} className="p-2 bg-green-600/80 rounded-lg hover:bg-green-600 transition-all group-hover:scale-110"><PlayIcon className="w-6 h-6"/></button>
-                                    <button onClick={() => setSessionToDelete(session.id)} title={t('delete')} className="p-2 bg-red-600/80 rounded-lg hover:bg-red-600 transition-all group-hover:scale-110"><TrashIcon className="w-6 h-6"/></button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
+  const handleExportSession = (sessionId: string) => {
+    const session = sessions.find(s => s.id === sessionId);
+    if (!session) return;
+
+    const filename = `${sanitizeFilename(session.title)}.json`;
+    const data = JSON.stringify(session, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportAllSessions = () => {
+    if (sessions.length === 0) return;
+    
+    const filename = 'sagaforge_adventures_backup.json';
+    const data = JSON.stringify(sessions, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleFileImport = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const text = e.target?.result;
+        if (typeof text !== 'string') {
+          throw new Error("File content is not text.");
+        }
+        const data = JSON.parse(text);
+
+        const sessionsToImport: GameSession[] = Array.isArray(data) ? data : [data];
+
+        const areSessionsValid = sessionsToImport.every(
+          s => s && typeof s === 'object' && s.id && s.title && Array.isArray(s.history)
+        );
+
+        if (!areSessionsValid) {
+          throw new Error("Invalid session format.");
+        }
+
+        setSessions(prevSessions => {
+          const sessionsMap = new Map(prevSessions.map(s => [s.id, s]));
+          sessionsToImport.forEach(session => {
+            sessionsMap.set(session.id, session);
+          });
+          const newSessions = Array.from(sessionsMap.values());
+          localforage.setItem(SESSIONS_KEY, newSessions);
+          return newSessions;
+        });
+        
+        const successString = t('importSuccess') as string;
+        setImportSuccessMessage(successString.replace('{count}', sessionsToImport.length.toString()));
+
+      } catch (err) {
+        console.error("Import failed:", err);
+        setError(t('importError') as string);
+      } finally {
+        if (event.target) {
+          event.target.value = '';
+        }
+      }
+    };
+    reader.onerror = () => {
+      setError(t('importError') as string);
+      if (event.target) {
+        event.target.value = '';
+      }
+    };
+    reader.readAsText(file);
+  };
+  
+  // Click outside handler for volume slider
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+        if (
+            showVolumeSlider &&
+            musicButtonRef.current && !musicButtonRef.current.contains(event.target as Node) &&
+            volumeSliderRef.current && !volumeSliderRef.current.contains(event.target as Node)
+        ) {
+            setShowVolumeSlider(false);
+        }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showVolumeSlider]);
+
+  const toggleVolumeSlider = () => {
+    if (!musicButtonRef.current) return;
+    const rect = musicButtonRef.current.getBoundingClientRect();
+    setSliderPosition({
+        top: rect.bottom + 8, // 8px margin
+        right: window.innerWidth - rect.right,
+    });
+    setShowVolumeSlider(prev => !prev);
+  };
+
+
+  const renderSessionSelect = () => {
+    const styleOptions = [
+      ...predefinedStyles,
+      { id: 'custom', name: 'Custom', imageUrl: '/assets/style-custom.png' }
+    ];
+
+    return (
+        <div className="w-full max-w-4xl mx-auto text-center animate-fadeIn p-4">
+            <div className="bg-slate-800/50 p-6 md:p-8 rounded-xl shadow-2xl border border-slate-700 backdrop-blur-sm relative">
+                <div className="absolute top-4 right-4 z-10">
+                    <LanguageSelector language={language} setLanguage={setLanguage} />
                 </div>
-            )}
-            
-            <h2 className="text-2xl font-bold text-teal-300 mb-4 mt-8">{t('startNew')}</h2>
-            <p className="text-lg text-slate-300 mb-6">{t('description')}</p>
-            <div className="relative w-full">
-                <textarea
-                    ref={promptTextareaRef}
-                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 pr-14 text-white focus:ring-2 focus:ring-amber-500 focus:outline-none transition duration-200 h-28 resize-none"
-                    placeholder={t('placeholder')}
-                    value={playerInput}
-                    onChange={(e) => {
-                      setPlayerInput(e.target.value);
-                      setIsPromptAiGenerated(false); // User has edited the prompt
-                    }}
-                    disabled={isGeneratingIdea || gameState === 'LOADING'}
-                />
-                <button
-                    onClick={handleGenerateIdea}
-                    disabled={isGeneratingIdea || gameState === 'LOADING'}
-                    title={t('generatePromptIdea')}
-                    className="absolute top-3 right-3 p-2 rounded-full bg-teal-600/50 text-teal-300 hover:bg-teal-600 hover:text-white transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center h-9 w-9"
-                >
-                    {isGeneratingIdea ? <LoadingSpinner size="small" /> : <SparklesIcon className="w-5 h-5" />}
-                </button>
-            </div>
-             <div className="flex items-center justify-center gap-4 mt-6">
-                <label className="flex items-center cursor-pointer">
-                    <span className="mr-3 text-slate-300">{t('narrate')}</span>
-                    <div className="relative">
-                        <input type="checkbox" checked={isNarrationEnabled} onChange={() => setIsNarrationEnabled(!isNarrationEnabled)} className="sr-only" />
-                        <div className={`block w-14 h-8 rounded-full transition-colors ${isNarrationEnabled ? 'bg-amber-500' : 'bg-slate-600'}`}></div>
-                        <div className={`dot absolute left-1 top-1 bg-white w-6 h-6 rounded-full transition-transform ${isNarrationEnabled ? 'transform translate-x-6' : ''}`}></div>
+                <img src="/assets/adventure-gen-logo.png" alt="SagaForge Logo" className="w-48 mx-auto mb-2" />
+                <h1 className="text-4xl md:text-5xl font-bold text-white mb-2">{t('title')}</h1>
+                
+                <div className="my-8">
+                    <div className="flex justify-between items-center mb-4">
+                      <h2 className="text-2xl font-bold text-teal-300">{t('sessions')}</h2>
+                      <div className="flex gap-2">
+                        <label htmlFor="import-file-input" className="flex items-center gap-2 bg-slate-700/80 border border-slate-600 px-3 py-2 rounded-lg hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer text-sm font-semibold">
+                          <ArrowUpTrayIcon className="w-5 h-5"/> {t('importAdventures')}
+                        </label>
+                        <input id="import-file-input" type="file" className="hidden" onChange={handleFileImport} accept=".json"/>
+                        {sessions.length > 0 && (
+                          <button onClick={handleExportAllSessions} className="flex items-center gap-2 bg-slate-700/80 border border-slate-600 px-3 py-2 rounded-lg hover:bg-slate-700 text-slate-300 hover:text-white transition-colors text-sm font-semibold">
+                            <ArrowDownTrayIcon className="w-5 h-5"/> {t('exportAll')}
+                          </button>
+                        )}
+                      </div>
                     </div>
-                </label>
+                    {sessions.length > 0 ? (
+                      <div className="space-y-3 max-h-72 overflow-y-auto pr-2 custom-scrollbar">
+                          {sessions.sort((a,b) => b.createdAt - a.createdAt).map(session => (
+                              <div 
+                                  key={session.id} 
+                                  className="bg-slate-900/70 rounded-lg flex items-center transition-all duration-300 border-2 border-transparent hover:border-amber-400 hover:bg-slate-800/80 group"
+                              >
+                                  <div 
+                                    className="flex-1 min-w-0 flex items-center cursor-pointer"
+                                    onMouseMove={(e) => handleMouseMove(e, session.prompt)}
+                                    onMouseLeave={handleMouseLeave}
+                                    onWheel={handleTooltipWheelScroll}
+                                    onClick={() => handleResumeSession(session.id)}
+                                  >
+                                    <img src={session.bannerUrl} alt="Adventure banner" className="w-24 h-24 object-cover rounded-l-lg flex-shrink-0" />
+                                    <div className="flex-1 min-w-0 p-3 text-left">
+                                        <p className="font-semibold text-lg text-white truncate">{session.title}</p>
+                                        <p className="text-sm text-slate-400 truncate">{session.prompt}</p>
+                                        <div className="flex items-center gap-1.5 mt-1">
+                                            <PaintBrushIcon className="w-3 h-3 text-teal-400 flex-shrink-0" />
+                                            <p className="text-xs text-teal-500 truncate">{session.visualStyle}</p>
+                                        </div>
+                                        <p className="text-xs text-slate-500 mt-1">{new Date(session.createdAt).toLocaleString()}</p>
+                                    </div>
+                                  </div>
+                                  <div className="flex gap-2 flex-shrink-0 p-3 pointer-events-auto" onClick={e => e.stopPropagation()}>
+                                      <button onClick={() => handleResumeSession(session.id)} title={t('resume') as string} className="p-2 bg-green-600/80 rounded-lg hover:bg-green-600 transition-all group-hover:scale-110"><PlayIcon className="w-6 h-6"/></button>
+                                      <button onClick={() => handleExportSession(session.id)} title={t('exportSession') as string} className="p-2 bg-sky-600/80 rounded-lg hover:bg-sky-600 transition-all group-hover:scale-110"><ArrowDownTrayIcon className="w-6 h-6"/></button>
+                                      <button onClick={() => setSessionToDelete(session.id)} title={t('delete') as string} className="p-2 bg-red-600/80 rounded-lg hover:bg-red-600 transition-all group-hover:scale-110"><TrashIcon className="w-6 h-6"/></button>
+                                  </div>
+                              </div>
+                          ))}
+                      </div>
+                    ) : (
+                      <div className="text-center py-10 px-6 bg-slate-900/50 rounded-lg border border-slate-700">
+                        <p className="text-slate-400">{t('noSessionsMessage') as string}</p>
+                      </div>
+                    )}
+                </div>
+                
+                <h2 className="text-2xl font-bold text-teal-300 mb-4 mt-8">{t('startNew')}</h2>
+                <p className="text-lg text-slate-300 mb-6">{t('description')}</p>
+                <div className="relative w-full">
+                    <textarea
+                        ref={promptTextareaRef}
+                        className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 pr-14 text-white focus:ring-2 focus:ring-amber-500 focus:outline-none transition duration-200 h-28 resize-none"
+                        placeholder={t('placeholder') as string}
+                        value={playerInput}
+                        onChange={(e) => {
+                          setPlayerInput(e.target.value);
+                          setIsPromptAiGenerated(false); // User has edited the prompt
+                        }}
+                        disabled={isGeneratingIdea || gameState === 'LOADING'}
+                    />
+                    <button
+                        onClick={handleGenerateIdea}
+                        disabled={isGeneratingIdea || gameState === 'LOADING'}
+                        title={t('generatePromptIdea') as string}
+                        className="absolute top-3 right-3 p-2 rounded-full bg-teal-600/50 text-teal-300 hover:bg-teal-600 hover:text-white transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center h-9 w-9"
+                    >
+                        {isGeneratingIdea ? <LoadingSpinner size="small" /> : <SparklesIcon className="w-5 h-5" />}
+                    </button>
+                </div>
+                
+                 <div className="mt-6 text-left">
+                    <h3 className="text-lg font-semibold text-teal-300 mb-3">{t('visualStyle')}</h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+                        {styleOptions.map(style => {
+                            const isSelected = visualStyleSelection === style.id;
+                            return (
+                                <button
+                                    key={style.id}
+                                    onClick={() => setVisualStyleSelection(style.id)}
+                                    className={`
+                                        bg-gradient-to-br from-slate-800 to-slate-700 
+                                        border-2 rounded-lg overflow-hidden text-center cursor-pointer
+                                        transform transition-all duration-300 group 
+                                        focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-slate-900 focus:ring-amber-400
+                                        ${isSelected 
+                                            ? 'scale-105 border-teal-400 shadow-2xl shadow-teal-400/20' 
+                                            : 'border-slate-700 shadow-inner shadow-black/50 hover:scale-105 hover:border-teal-500/70 hover:shadow-xl active:scale-100'
+                                        }
+                                    `}
+                                >
+                                    <img src={style.imageUrl} alt={style.name} className="w-full h-32 object-cover group-hover:scale-110 transition-transform duration-300" />
+                                    <div className={`
+                                        p-3 border-t-2 bg-slate-800/50 backdrop-blur-sm
+                                        transition-colors duration-300
+                                        ${isSelected ? 'border-teal-400' : 'border-slate-700 group-hover:border-teal-500/70'}
+                                    `}>
+                                        <h4 className={`
+                                            font-bold transition-colors duration-300
+                                            ${isSelected ? 'text-teal-300' : 'text-slate-300 group-hover:text-white'}
+                                        `}>{t(style.id as keyof typeof translations.en) as string || style.name}</h4>
+                                    </div>
+                                </button>
+                            )
+                        })}
+                    </div>
+                    {visualStyleSelection === 'custom' && (
+                      <div className="relative w-full mt-4 animate-fadeIn">
+                          <textarea
+                              ref={customStyleTextareaRef}
+                              className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 pr-14 text-white focus:ring-2 focus:ring-amber-500 focus:outline-none transition duration-200 h-20 resize-none"
+                              placeholder={t('visualStylePlaceholder') as string}
+                              value={customVisualStyle}
+                              onChange={(e) => {
+                                  setCustomVisualStyle(e.target.value);
+                                  setIsCustomStyleAiGenerated(false);
+                              }}
+                              disabled={isGeneratingStyleIdea || gameState === 'LOADING'}
+                          />
+                          <button
+                              onClick={handleGenerateStyleIdea}
+                              disabled={isGeneratingStyleIdea || gameState === 'LOADING'}
+                              title={t('generateStyleIdea') as string}
+                              className="absolute top-3 right-3 p-2 rounded-full bg-teal-600/50 text-teal-300 hover:bg-teal-600 hover:text-white transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center h-9 w-9"
+                          >
+                              {isGeneratingStyleIdea ? <LoadingSpinner size="small" /> : <SparklesIcon className="w-5 h-5" />}
+                          </button>
+                      </div>
+                    )}
+                </div>
+                <button
+                    onClick={handleStartNewGame}
+                    disabled={gameState === 'LOADING' || isGeneratingIdea || isGeneratingStyleIdea}
+                    className="mt-8 w-full bg-gradient-to-r from-amber-500 to-yellow-600 text-slate-900 font-bold py-3 px-4 rounded-lg hover:from-amber-600 hover:to-yellow-700 transition-all duration-200 transform hover:scale-105 flex items-center justify-center gap-2 disabled:from-slate-600 disabled:to-slate-700 disabled:text-slate-400 disabled:cursor-not-allowed disabled:scale-100 disabled:shadow-none"
+                >
+                  <WandIcon className="w-6 h-6" /> {t('beginAdventure')}
+                </button>
+                <Tooltip data={tooltipData} ref={tooltipContentRef} />
             </div>
-            <button
-                onClick={handleStartNewGame}
-                disabled={gameState === 'LOADING' || isGeneratingIdea}
-                className="mt-4 w-full bg-gradient-to-r from-amber-500 to-yellow-600 text-slate-900 font-bold py-3 px-4 rounded-lg hover:from-amber-600 hover:to-yellow-700 transition-all duration-200 transform hover:scale-105 flex items-center justify-center gap-2 disabled:from-slate-600 disabled:to-slate-700 disabled:text-slate-400 disabled:cursor-not-allowed disabled:scale-100 disabled:shadow-none"
-            >
-              <WandIcon className="w-6 h-6" /> {t('beginAdventure')}
-            </button>
-            {error && <p className="text-red-400 mt-4">{error}</p>}
-            <Tooltip data={tooltipData} ref={tooltipContentRef} />
         </div>
-    </div>
-  );
+      );
+  }
   
   const renderGame = () => {
     if (!activeSession) return null;
@@ -373,23 +658,39 @@ const App: React.FC = () => {
 
     return (
         <div className="flex flex-col w-full h-full max-w-7xl mx-auto">
+             <AudioManager 
+                mood={currentStep.mood}
+                volume={musicVolume}
+                isMuted={isMusicMuted}
+                hasInteracted={hasInteracted}
+            />
             <header className="w-full flex justify-between items-center mb-4 flex-shrink-0 animate-fadeIn p-2 bg-slate-800/30 backdrop-blur-sm rounded-lg border border-slate-700">
-                <button onClick={() => { setActiveSession(null); setGameState('SESSION_SELECT'); }} className="flex items-center gap-2 bg-slate-800/50 border border-slate-700 px-3 py-2 rounded-lg hover:bg-slate-700 transition-colors" title={t('home')}>
+                <button onClick={() => { setActiveSession(null); setGameState('SESSION_SELECT'); }} className="flex items-center gap-2 bg-slate-800/50 border border-slate-700 px-3 py-2 rounded-lg hover:bg-slate-700 transition-colors" title={t('home') as string}>
                     <HomeIcon className="w-5 h-5 text-amber-400"/>
-                    <span className="hidden md:inline font-semibold">{t('home')}</span>
+                    <span className="hidden md:inline font-semibold">{t('home') as string}</span>
                 </button>
                 <h1 className="text-xl font-bold text-amber-300 mx-4 text-center flex-grow hidden sm:block truncate" style={{textShadow: '1px 1px 2px #000'}}>
-                    {t('title')}
+                    {t('title') as string}
                 </h1>
                 <div className="flex items-center gap-2 md:gap-4">
                     <button 
                         onClick={() => setIsNarrationEnabled(!isNarrationEnabled)} 
                         className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-all duration-300 ${isNarrationEnabled ? 'bg-teal-600 border-teal-500 text-white shadow-md' : 'bg-slate-700/80 border-slate-600 text-slate-300'} hover:border-amber-400 hover:text-white`} 
-                        title={t('narrate')}
+                        title={t('narrate') as string}
                     >
                          { isNarrationEnabled ? <SpeakerOnIcon className="w-5 h-5" /> : <SpeakerOffIcon className="w-5 h-5" />}
-                        <span className="hidden lg:inline font-semibold">{t('narrate')}</span>
+                        <span className="hidden lg:inline font-semibold">{t('narrate') as string}</span>
                     </button>
+                    <div className="relative flex items-center">
+                        <button
+                            ref={musicButtonRef}
+                            onClick={toggleVolumeSlider}
+                            className="flex items-center gap-2 px-3 py-2 rounded-lg border transition-all duration-300 bg-slate-700/80 border-slate-600 text-slate-300 hover:border-amber-400 hover:text-white"
+                            title={t('toggleMusic') as string}
+                        >
+                            {isMusicMuted || musicVolume === 0 ? <SpeakerOffIcon className="w-5 h-5" /> : <SpeakerOnIcon className="w-5 h-5" />}
+                        </button>
+                    </div>
                     <LanguageSelector language={language} setLanguage={setLanguage} />
                 </div>
             </header>
@@ -407,11 +708,11 @@ const App: React.FC = () => {
                     inventory={currentStep.inventory} 
                     currentQuest={currentStep.currentQuest} 
                     translations={{ 
-                        inventory: t('inventory'), 
-                        currentQuest: t('currentQuest'), 
-                        emptyInventory: t('emptyInventory'), 
-                        noQuest: t('noQuest'),
-                        storyTimeline: t('storyTimeline')
+                        inventory: t('inventory') as string, 
+                        currentQuest: t('currentQuest') as string, 
+                        emptyInventory: t('emptyInventory') as string, 
+                        noQuest: t('noQuest') as string,
+                        storyTimeline: t('storyTimeline') as string
                     }}
                     sessionHistory={activeSession.history}
                     currentIndex={currentStepIndex}
@@ -427,7 +728,6 @@ const App: React.FC = () => {
                 t={t}
                 />
             </div>
-             {error && <div className="fixed bottom-4 right-4 bg-red-800 text-white p-4 rounded-lg shadow-lg animate-fadeIn">{error}</div>}
         </div>
     );
   };
@@ -446,14 +746,57 @@ const App: React.FC = () => {
         {gameState === 'SESSION_SELECT' || !activeSession ? renderSessionSelect() : renderGame()}
       </div>
 
+      {showVolumeSlider && portalRoot && ReactDOM.createPortal(
+        <div
+            ref={volumeSliderRef}
+            className="fixed p-2 bg-slate-800/80 backdrop-blur-sm border border-slate-600 rounded-lg z-50 animate-fadeIn origin-top-right"
+            style={{ top: `${sliderPosition.top}px`, right: `${sliderPosition.right}px` }}
+        >
+            <div className="flex items-center gap-4">
+                <button 
+                    onClick={() => setIsMusicMuted(!isMusicMuted)} 
+                    className="p-2 text-slate-300 hover:text-white hover:bg-slate-700 rounded-md"
+                >
+                    {isMusicMuted || musicVolume === 0 ? <SpeakerOffIcon className="w-5 h-5" /> : <SpeakerOnIcon className="w-5 h-5" />}
+                </button>
+                <div className="h-32 flex items-center justify-center">
+                    <input
+                        type="range"
+                        min="0"
+                        max="1"
+                        step="0.01"
+                        value={isMusicMuted ? 0 : musicVolume}
+                        onChange={(e) => {
+                            setMusicVolume(parseFloat(e.target.value));
+                            if (isMusicMuted) setIsMusicMuted(false);
+                            if (parseFloat(e.target.value) > 0 && isMusicMuted) setIsMusicMuted(false);
+                            if (parseFloat(e.target.value) === 0 && !isMusicMuted) setIsMusicMuted(true);
+                        }}
+                        className="w-4 h-28 bg-slate-600 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-6 [&::-webkit-slider-thumb]:h-6 [&::-webkit-slider-thumb]:bg-amber-400 [&::-webkit-slider-thumb]:rounded-full"
+                        style={{ writingMode: 'vertical-lr', direction: 'rtl' }}
+                    />
+                </div>
+            </div>
+        </div>,
+        portalRoot
+      )}
+
+      {(error || importSuccessMessage) && (
+        <div className="fixed bottom-4 right-4 z-[100] animate-fadeIn">
+            {error && <div className="bg-red-800/90 border border-red-600 text-white p-4 rounded-lg shadow-lg">{error}</div>}
+            {importSuccessMessage && <div className="bg-green-800/90 border border-green-600 text-white p-4 rounded-lg shadow-lg">{importSuccessMessage}</div>}
+        </div>
+      )}
+
+
       {showBranchConfirm && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 animate-fadeIn">
           <div className="bg-slate-800 border border-amber-500 rounded-lg shadow-xl p-6 max-w-sm text-center">
-            <h3 className="text-xl font-bold text-white mb-2">{t('branchConfirmTitle')}</h3>
-            <p className="text-slate-300 mb-6">{t('branchConfirmMessage')}</p>
+            <h3 className="text-xl font-bold text-white mb-2">{t('branchConfirmTitle') as string}</h3>
+            <p className="text-slate-300 mb-6">{t('branchConfirmMessage') as string}</p>
             <div className="flex justify-center gap-4">
-              <button onClick={() => setShowBranchConfirm(null)} className="px-6 py-2 rounded-lg bg-slate-600 hover:bg-slate-700 transition-colors">{t('cancel')}</button>
-              <button onClick={confirmBranching} className="px-6 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 transition-colors font-semibold">{t('confirm')}</button>
+              <button onClick={() => setShowBranchConfirm(null)} className="px-6 py-2 rounded-lg bg-slate-600 hover:bg-slate-700 transition-colors">{t('cancel') as string}</button>
+              <button onClick={confirmBranching} className="px-6 py-2 rounded-lg bg-teal-600 hover:bg-teal-700 transition-colors font-semibold">{t('confirm') as string}</button>
             </div>
           </div>
         </div>
@@ -462,11 +805,11 @@ const App: React.FC = () => {
       {sessionToDelete && (
          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex justify-center items-center z-50 animate-fadeIn">
           <div className="bg-slate-800 border border-red-500 rounded-lg shadow-xl p-6 max-w-sm text-center">
-            <h3 className="text-xl font-bold text-white mb-2">{t('deleteConfirmTitle')}</h3>
-            <p className="text-slate-300 mb-6">{t('deleteConfirm')}</p>
+            <h3 className="text-xl font-bold text-white mb-2">{t('deleteConfirmTitle') as string}</h3>
+            <p className="text-slate-300 mb-6">{t('deleteConfirm') as string}</p>
             <div className="flex justify-center gap-4">
-              <button onClick={() => setSessionToDelete(null)} className="px-6 py-2 rounded-lg bg-slate-600 hover:bg-slate-700 transition-colors">{t('cancel')}</button>
-              <button onClick={confirmDeleteSession} className="px-6 py-2 rounded-lg bg-red-600 hover:bg-red-700 transition-colors font-semibold">{t('delete')}</button>
+              <button onClick={() => setSessionToDelete(null)} className="px-6 py-2 rounded-lg bg-slate-600 hover:bg-slate-700 transition-colors">{t('cancel') as string}</button>
+              <button onClick={confirmDeleteSession} className="px-6 py-2 rounded-lg bg-red-600 hover:bg-red-700 transition-colors font-semibold">{t('delete') as string}</button>
             </div>
           </div>
         </div>

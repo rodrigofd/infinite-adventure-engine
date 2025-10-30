@@ -49,10 +49,14 @@ const responseSchema = {
     },
     imagePrompt: {
       type: Type.STRING,
-      description: 'A detailed prompt for an image generator, including character description and a consistent art style. This prompt must be in English.',
+      description: 'A detailed prompt for an image generator, focusing only on the content of the scene (characters, action, environment). This prompt must be in English. Do NOT include art style descriptions.',
+    },
+    mood: {
+      type: Type.STRING,
+      description: "A single keyword in English classifying the mood of the scene (e.g., 'calm', 'tense', 'action', 'mysterious', 'uplifting', 'sad')."
     },
   },
-  required: ['title', 'story', 'choices', 'inventory', 'currentQuest', 'imagePrompt'],
+  required: ['title', 'story', 'choices', 'inventory', 'currentQuest', 'imagePrompt', 'mood'],
 };
 
 const getSystemInstruction = (language: 'en' | 'es' | 'pt'): string => {
@@ -61,8 +65,9 @@ const getSystemInstruction = (language: 'en' | 'es' | 'pt'): string => {
 2.  **Story:** The story should be immersive, descriptive, and well-written.
 3.  **Choices:** Provide 3 distinct and meaningful choices that will genuinely alter the plot.
 4.  **Inventory & Quest:** Accurately update the inventory and current quest. The inventory is an array of objects, each with a 'name' and an 'imagePrompt'.
-5.  **Image Prompts:** The 'imagePrompt' (for the main scene) and all 'imagePrompt's for inventory items are critical. They must describe the scene/item vividly and MUST be in ENGLISH. The main 'imagePrompt' MUST always include a consistent art style token to ensure visual cohesion. For example: "A lone warrior with a glowing sword, in a vibrant, detailed, digital painting style with a fantasy theme." Inventory prompts should be simple and clear.
-6.  **Consistency:** Maintain consistency with characters, plot, inventory, and quests throughout the game. Use the provided story history to inform your next response. Do not repeat story elements. Be creative.`;
+5.  **Image Prompts:** The 'imagePrompt' (for the main scene) and all 'imagePrompt's for inventory items are critical. They must describe the scene/item vividly and MUST be in ENGLISH. For the main 'imagePrompt', focus only on the content of the scene (characters, action, environment). Do NOT include art style descriptions like "digital painting" or "comic book style", as the visual style will be added separately. Inventory prompts should be simple and clear (e.g., "A glowing blue potion in a corked glass vial.").
+6.  **Mood:** Classify the scene's mood with a single English keyword (e.g., 'calm', 'tense', 'action', 'mysterious', 'uplifting', 'sad'). This must be in English.
+7.  **Consistency:** Maintain consistency with characters, plot, inventory, and quests throughout the game. Use the provided story history to inform your next response. Do not repeat story elements. Be creative.`;
 
     switch (language) {
       case 'es':
@@ -75,11 +80,13 @@ const getSystemInstruction = (language: 'en' | 'es' | 'pt'): string => {
 };
 
 
-const generateImage = async (prompt: string, model: 'high-quality' | 'fast' = 'high-quality', aspectRatio: '16:9' | '1:1' = '16:9'): Promise<string> => {
+const generateImage = async (prompt: string, visualStyle: string, model: 'high-quality' | 'fast' = 'high-quality', aspectRatio: '16:9' | '1:1' = '16:9'): Promise<string> => {
+    const combinedPrompt = `${prompt}, in the style of ${visualStyle}`;
+    
     if (model === 'fast') {
         const response = await ai.models.generateContent({
             model: fastImageModel,
-            contents: { parts: [{ text: prompt }] },
+            contents: { parts: [{ text: combinedPrompt }] },
             config: { responseModalities: ['IMAGE'] },
         });
         const base64ImageBytes = response.candidates[0].content.parts[0].inlineData.data;
@@ -87,8 +94,9 @@ const generateImage = async (prompt: string, model: 'high-quality' | 'fast' = 'h
     }
 
     const response = await ai.models.generateImages({
+      // FIX: Correctly reference the highQualityImageModel variable.
       model: highQualityImageModel,
-      prompt: prompt,
+      prompt: combinedPrompt,
       config: {
         numberOfImages: 1,
         outputMimeType: 'image/jpeg',
@@ -100,9 +108,9 @@ const generateImage = async (prompt: string, model: 'high-quality' | 'fast' = 'h
     return `data:image/jpeg;base64,${base64ImageBytes}`;
 };
 
-export const generateBannerImage = async (prompt: string): Promise<string> => {
-    const bannerPrompt = `Create a cinematic, banner-style digital painting that serves as the title screen for an adventure. The scene should be epic, widescreen, and visually stunning, capturing the core essence of this prompt: "${prompt}". Focus on the atmosphere and key elements. Style: dramatic lighting, detailed, fantasy art.`
-    return generateImage(bannerPrompt, 'high-quality', '16:9');
+export const generateBannerImage = async (prompt: string, visualStyle: string): Promise<string> => {
+    const bannerPrompt = `Create a cinematic, banner-style image that serves as the title screen for an adventure. The scene should be epic, widescreen, and visually stunning, capturing the core essence of this prompt: "${prompt}". Focus on the atmosphere and key elements.`
+    return generateImage(bannerPrompt, visualStyle, 'high-quality', '16:9');
 }
 
 const generateStoryContent = async (prompt: string, language: 'en' | 'es' | 'pt'): Promise<GeminiResponse> => {
@@ -123,13 +131,14 @@ const generateStoryContent = async (prompt: string, language: 'en' | 'es' | 'pt'
 
 const processInventoryImages = async (
     newInventory: Array<{ name: string; imagePrompt: string }>,
-    previousInventory: InventoryItem[]
+    previousInventory: InventoryItem[],
+    visualStyle: string,
 ): Promise<InventoryItem[]> => {
     const prevItemNames = new Set(previousInventory.map(item => item.name));
     const newItemsToGenerate = newInventory.filter(item => !prevItemNames.has(item.name));
     
     const generatedImages = await Promise.all(
-        newItemsToGenerate.map(item => generateImage(item.imagePrompt, 'high-quality', '1:1'))
+        newItemsToGenerate.map(item => generateImage(item.imagePrompt, visualStyle, 'fast', '1:1'))
     );
 
     const newInventoryWithImages: InventoryItem[] = newItemsToGenerate.map((item, index) => ({
@@ -142,26 +151,30 @@ const processInventoryImages = async (
     return [...oldItems, ...newInventoryWithImages];
 };
 
-export const generateAdventureStart = async (playerInput: string, language: 'en' | 'es' | 'pt'): Promise<{ scene: Omit<GeminiResponse, 'inventory'> & { inventory: InventoryItem[] }, imageUrl: string, bannerUrl: string }> => {
+export const generateAdventureStart = async (playerInput: string, language: 'en' | 'es' | 'pt', visualStyle: string): Promise<{ scene: Omit<GeminiResponse, 'inventory'> & { inventory: InventoryItem[] }, imageUrl: string, bannerUrl: string }> => {
     const prompt = {
       es: `Inicia una nueva aventura. El prompt inicial del usuario es: "${playerInput}". Crea un título corto y atractivo para la aventura y la primera escena. El jugador debe comenzar con un inventario vacío y una misión inicial clara.`,
       pt: `Inicia uma nova aventura. O prompt inicial do utilizador é: "${playerInput}". Cria um título curto e cativante para a aventura e a primeira cena. O jogador deve começar com um inventário vazio e uma missão inicial clara.`,
       en: `Start a new adventure. The user's initial prompt is: "${playerInput}". Create a short, catchy title for the adventure and the very first scene. The player should start with an empty inventory and a clear starting quest.`,
     }[language];
     
-    // Generate text and banner in parallel
-    const [scene, bannerUrl] = await Promise.all([
-        generateStoryContent(prompt, language),
-        generateBannerImage(playerInput)
-    ]);
+    // Start banner generation immediately, but don't wait for it.
+    const bannerUrlPromise = generateBannerImage(playerInput, visualStyle);
 
-    // Generate scene image (faster model) after getting the prompt
-    const imageUrl = await generateImage(scene.imagePrompt, 'fast');
+    // Generate the story content.
+    const scene = await generateStoryContent(prompt, language);
+    
+    // Once we have the story, we can generate the scene image.
+    // We can do this in parallel with the banner generation which is already running.
+    const imageUrl = await generateImage(scene.imagePrompt, visualStyle, 'fast');
+
+    // Now, wait for the banner to complete if it hasn't already.
+    const bannerUrl = await bannerUrlPromise;
     
     return { scene: { ...scene, inventory: [] }, imageUrl, bannerUrl };
 };
 
-export const generateNextStep = async (history: StoryStep[], choice: string, language: 'en' | 'es' | 'pt'): Promise<{ scene: Omit<GeminiResponse, 'inventory'> & { inventory: InventoryItem[] }, imageUrl: string }> => {
+export const generateNextStep = async (history: StoryStep[], choice: string, language: 'en' | 'es' | 'pt', visualStyle: string): Promise<{ scene: Omit<GeminiResponse, 'inventory'> & { inventory: InventoryItem[] }, imageUrl: string }> => {
     const simplifiedHistory = history.map(h => `Scene: ${h.story.substring(0,100)}... Choice: ${h.choiceMade}`).join('\n');
     const lastStep = history[history.length - 1];
     const inventory = lastStep.inventory;
@@ -176,8 +189,8 @@ export const generateNextStep = async (history: StoryStep[], choice: string, lan
     const scene = await generateStoryContent(prompt, language);
     
     const [imageUrl, processedInventory] = await Promise.all([
-        generateImage(scene.imagePrompt, 'fast'),
-        processInventoryImages(scene.inventory, inventory)
+        generateImage(scene.imagePrompt, visualStyle, 'fast'),
+        processInventoryImages(scene.inventory, inventory, visualStyle)
     ]);
 
     return { scene: { ...scene, inventory: processedInventory }, imageUrl };
@@ -186,14 +199,14 @@ export const generateNextStep = async (history: StoryStep[], choice: string, lan
 export const generateRandomPrompt = async (userInput: string, language: 'en' | 'es' | 'pt'): Promise<string> => {
   const prompt = {
     es: userInput.trim()
-      ? `Basado en estas ideas/palabras clave: "${userInput}", genera un prompt de inicio creativo y atractivo para un juego de "elige tu propia aventura". El prompt debe describir un personaje, un escenario y un objetivo inicial. También debe sugerir un estilo de arte visual. La respuesta debe ser un solo párrafo de texto, listo para ser copiado en un cuadro de texto. No incluyas nada más que el texto del prompt.`
-      : `Genera un prompt de inicio completamente aleatorio, creativo y atractivo para un juego de "elige tu propia aventura". El prompt debe describir un personaje, un escenario y un objetivo inicial. También debe sugerir un estilo de arte visual. La respuesta debe ser un solo párrafo de texto, listo para ser copiado en un cuadro de texto. No incluyas nada más que el texto del prompt.`,
+      ? `Basado en estas ideas/palabras clave: "${userInput}", genera un prompt de inicio creativo y atractivo para un juego de "elige tu propia aventura". El prompt debe describir un personaje, un escenario y un objetivo inicial. La respuesta debe ser un solo párrafo de texto, listo para ser copiado en un cuadro de texto. No incluyas nada más que el texto del prompt.`
+      : `Genera un prompt de inicio completamente aleatorio, creativo y atractivo para un juego de "elige tu propia aventura". El prompt debe describir un personaje, un escenario y un objetivo inicial. La respuesta debe ser un solo párrafo de texto, listo para ser copiado en un cuadro de texto. No incluyas nada más que el texto del prompt.`,
     pt: userInput.trim()
-      ? `Com base nestas ideias/palavras-chave: "${userInput}", gera um prompt de início criativo e envolvente para um jogo de 'escolhe a tua própria aventura'. O prompt deve descrever uma personagem, um cenário e um objetivo inicial. Deve também sugerir um estilo de arte visual. A resposta deve ser um único parágrafo de texto, pronto para ser colado numa caixa de texto. Não incluas nada além do próprio texto do prompt.`
-      : `Gera um prompt de início completamente aleatório, criativo e envolvente para um jogo de 'escolhe a tua própria aventura'. O prompt deve descrever uma personagem, um cenário e um objetivo inicial. Deve também sugerir um estilo de arte visual. A resposta deve ser um único parágrafo de texto, pronto para ser colado numa caixa de texto. Não incluas nada além do próprio texto do prompt.`,
+      ? `Com base nestas ideias/palavras-chave: "${userInput}", gera um prompt de início criativo e envolvente para um jogo de 'escolhe a tua própria aventura'. O prompt deve descrever uma personagem, um cenário e um objetivo inicial. A resposta deve ser um único parágrafo de texto, pronto para ser colado numa caixa de texto. Não incluas nada além do próprio texto do prompt.`
+      : `Gera um prompt de início completamente aleatório, criativo e envolvente para um jogo de 'escolhe a tua própria aventura'. O prompt deve descrever uma personagem, um cenário e um objetivo inicial. A resposta deve ser um único parágrafo de texto, pronto para ser colado numa caixa de texto. Não incluas nada além do próprio texto do prompt.`,
     en: userInput.trim()
-      ? `Based on these ideas/keywords: "${userInput}", generate a creative and engaging starter prompt for a choose-your-own-adventure game. The prompt should describe a character, a setting, and an initial goal. It should also suggest a visual art style. The response should be a single paragraph of text, ready to be pasted into a textbox. Do not include anything other than the prompt text itself.`
-      : `Generate a completely random, creative, and engaging starter prompt for a choose-your-own-adventure game. The prompt should describe a character, a setting, and an initial goal. It should also suggest a visual art style. The response should be a single paragraph of text, ready to be pasted into a textbox. Do not include anything other than the prompt text itself.`,
+      ? `Based on these ideas/keywords: "${userInput}", generate a creative and engaging starter prompt for a choose-your-own-adventure game. The prompt should describe a character, a setting, and an initial goal. The response should be a single paragraph of text, ready to be pasted into a textbox. Do not include anything other than the prompt text itself.`
+      : `Generate a completely random, creative, and engaging starter prompt for a choose-your-own-adventure game. The prompt should describe a character, a setting, and an initial goal. The response should be a single paragraph of text, ready to be pasted into a textbox. Do not include anything other than the prompt text itself.`,
   }[language];
 
   const response = await ai.models.generateContent({
@@ -205,4 +218,28 @@ export const generateRandomPrompt = async (userInput: string, language: 'en' | '
   });
 
   return response.text.trim();
+};
+
+export const generateRandomVisualStylePrompt = async (userInput: string, language: 'en' | 'es' | 'pt'): Promise<string> => {
+    const prompt = {
+        es: userInput.trim()
+          ? `Basado en estas ideas/palabras clave: "${userInput}", genera una descripción de estilo de arte visual concisa pero evocadora para un generador de imágenes de IA. La respuesta debe ser solo una frase corta o una oración.`
+          : `Genera una descripción de estilo de arte visual completamente aleatoria, concisa pero evocadora para un generador de imágenes de IA. Ejemplos: 'Pintura al óleo gótica', 'Arte de cómic de ciencia ficción retro', 'Estilo de anime exuberante de Studio Ghibli'. La respuesta debe ser solo una frase corta o una oración.`,
+        pt: userInput.trim()
+          ? `Com base nestas ideias/palavras-chave: "${userInput}", gera uma descrição de estilo de arte visual concisa mas evocativa para um gerador de imagens de IA. A resposta deve ser apenas uma frase curta ou sentença.`
+          : `Gera uma descrição de estilo de arte visual completamente aleatória, concisa mas evocativa para um gerador de imagens de IA. Exemplos: 'Pintura a óleo gótica', 'Arte de banda desenhada de ficção científica retro', 'Estilo de anime exuberante do Studio Ghibli'. A resposta deve ser apenas uma frase curta ou sentença.`,
+        en: userInput.trim()
+          ? `Based on these ideas/keywords: "${userInput}", generate a concise but evocative visual art style description for an AI image generator. The response must be a short phrase or sentence only.`
+          : `Generate a completely random, concise but evocative visual art style description for an AI image generator. Examples: 'Gothic oil painting', 'Retro sci-fi comic book art', 'Lush Studio Ghibli anime style'. The response must be a short phrase or sentence only.`,
+      }[language];
+    
+      const response = await ai.models.generateContent({
+        model: 'gemini-flash-lite-latest',
+        contents: prompt,
+        config: {
+            temperature: 1.0,
+        }
+      });
+    
+      return response.text.trim();
 };

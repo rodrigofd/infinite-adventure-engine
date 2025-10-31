@@ -1,5 +1,4 @@
-
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { GeminiResponse, StoryStep, InventoryItem } from "../types";
 
 const API_KEY = process.env.API_KEY;
@@ -87,14 +86,13 @@ const generateImage = async (prompt: string, visualStyle: string, model: 'high-q
         const response = await ai.models.generateContent({
             model: fastImageModel,
             contents: { parts: [{ text: combinedPrompt }] },
-            config: { responseModalities: ['IMAGE'] },
+            config: { responseModalities: [Modality.IMAGE] },
         });
         const base64ImageBytes = response.candidates[0].content.parts[0].inlineData.data;
         return `data:image/jpeg;base64,${base64ImageBytes}`;
     }
 
     const response = await ai.models.generateImages({
-      // FIX: Correctly reference the highQualityImageModel variable.
       model: highQualityImageModel,
       prompt: combinedPrompt,
       config: {
@@ -242,4 +240,59 @@ export const generateRandomVisualStylePrompt = async (userInput: string, languag
       });
     
       return response.text.trim();
+};
+
+export const generateSpeech = async (text: string): Promise<string> => {
+    const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash-preview-tts",
+        contents: [{ parts: [{ text }] }],
+        config: {
+            responseModalities: [Modality.AUDIO],
+            speechConfig: {
+                voiceConfig: {
+                    prebuiltVoiceConfig: { voiceName: 'Kore' }, // A versatile, clear voice.
+                },
+            },
+        },
+    });
+    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!base64Audio) {
+        throw new Error("No audio data received from TTS API.");
+    }
+    return base64Audio;
+};
+
+export const interpretUserChoice = async (
+    speech: string,
+    choices: string[],
+    language: 'en' | 'es' | 'pt'
+): Promise<string> => {
+    const prompt = {
+        en: `A user in a choose-your-own-adventure game said: "${speech}". Given the following choices, which one did they most likely pick? The choices are: [${choices.map(c => `"${c}"`).join(', ')}]. Your response MUST BE the exact text of one of the choices, or the word "UNCLEAR" if it's ambiguous or none of the choices match. Do not add any explanation or punctuation.`,
+        es: `Un usuario en un juego de 'elige tu propia aventura' dijo: "${speech}". Dadas las siguientes opciones, ¿cuál es más probable que haya elegido? Las opciones son: [${choices.map(c => `"${c}"`).join(', ')}]. Tu respuesta DEBE SER el texto exacto de una de las opciones, o la palabra "UNCLEAR" si es ambiguo o ninguna opción coincide. No agregues ninguna explicación ni puntuación.`,
+        pt: `Um usuário em um jogo de 'escolha sua própria aventura' disse: "${speech}". Dadas as seguintes opções, qual delas é mais provável que ele tenha escolhido? As opções são: [${choices.map(c => `"${c}"`).join(', ')}]. Sua resposta DEVE SER o texto exato de uma das opções, ou a palavra "UNCLEAR" se for ambíguo ou nenhuma das opções corresponder. Não adicione nenhuma explicação ou pontuação.`,
+    }[language];
+
+    const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: prompt,
+        config: {
+            temperature: 0.2
+        }
+    });
+
+    const result = response.text.trim().replace(/^"|"$/g, ''); // Trim and remove quotes
+    
+    // Validate if the result is one of the choices or 'UNCLEAR'
+    if (choices.includes(result) || result === 'UNCLEAR') {
+        return result;
+    }
+    
+    // Fallback check: find if any choice is a substring of the result, for robustness
+    const foundChoice = choices.find(c => result.includes(c));
+    if (foundChoice) {
+        return foundChoice;
+    }
+
+    return 'UNCLEAR'; // Default to unclear if model hallucinates or provides a non-matching response.
 };

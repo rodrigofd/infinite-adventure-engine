@@ -1,7 +1,9 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { GameState, GameSession } from '../types';
 import LoadingSpinner from './LoadingSpinner';
-import { ChevronLeftIcon, ChevronRightIcon } from './Icons';
+import { ChevronLeftIcon, ChevronRightIcon, MicrophoneIcon, SpeakerOnIcon, SparklesIcon } from './Icons';
+import { NarrationState } from './LiveNarrator';
+
 
 interface StoryViewProps {
   session: GameSession;
@@ -10,14 +12,47 @@ interface StoryViewProps {
   onPrev: () => void;
   onNext: () => void;
   gameState: GameState;
+  narrationState: NarrationState;
+  optimisticChoice: string | null;
   t: (key: string) => string | string[];
 }
 
-const StoryView: React.FC<StoryViewProps> = ({ session, currentIndex, onSelectChoice, onPrev, onNext, gameState, t }) => {
+const NarrationStatusIndicator: React.FC<{ state: NarrationState, t: (key: string) => string | string[] }> = ({ state, t }) => {
+  if (state === 'IDLE') return null;
+
+  const statusConfig: Record<NarrationState, { icon: React.ReactNode; text: string }> = {
+    IDLE: { icon: null, text: '' },
+    NARRATING: { icon: <SpeakerOnIcon className="w-6 h-6 text-teal-300" />, text: t('narrating') as string },
+    LISTENING: { icon: <MicrophoneIcon className="w-6 h-6 text-teal-300" />, text: t('listening') as string },
+    PROCESSING: { icon: <SparklesIcon className="w-6 h-6 text-teal-300 animate-pulse" />, text: t('processing') as string },
+  };
+
+  const { icon, text } = statusConfig[state];
+
+  return (
+    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-full max-w-xs mx-auto animate-fadeIn">
+      <div className="bg-slate-900/80 backdrop-blur-sm border border-teal-500/50 rounded-lg p-3 flex items-center justify-center gap-4 shadow-lg">
+        {icon}
+        <div className="flex items-center gap-1.5 h-6">
+          {[...Array(5)].map((_, i) => (
+            <div
+              key={i}
+              className="waveform-bar w-1 h-full bg-teal-400 rounded-full"
+              style={{ animationDelay: `${-1 + i * 0.2}s` }}
+            ></div>
+          ))}
+        </div>
+        <p className="text-teal-200 font-semibold w-28 text-center">{text}</p>
+      </div>
+    </div>
+  );
+};
+
+
+const StoryView: React.FC<StoryViewProps> = ({ session, currentIndex, onSelectChoice, onPrev, onNext, gameState, narrationState, optimisticChoice, t }) => {
   const currentStep = session.history[currentIndex];
   const storyHistory = session.history;
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [optimisticChoice, setOptimisticChoice] = useState<string | null>(null);
   const [loadingMessage, setLoadingMessage] = useState('');
   
   const isLastStepInHistory = currentIndex === storyHistory.length - 1;
@@ -34,19 +69,11 @@ const StoryView: React.FC<StoryViewProps> = ({ session, currentIndex, onSelectCh
     if (scrollRef.current) {
       scrollRef.current.scrollTop = 0;
     }
-    // Reset optimistic choice when the step actually changes
-    if (isLastStepInHistory) {
-        setOptimisticChoice(null);
-    }
-  }, [currentIndex, isLastStepInHistory]);
+  }, [currentIndex]);
 
   if (!currentStep) return null;
   
   const handleChoiceClick = (choice: string) => {
-    // Only set optimistic choice for immediate feedback on the latest step
-    if (isLastStepInHistory) {
-      setOptimisticChoice(choice);
-    }
     onSelectChoice(choice);
   };
 
@@ -98,12 +125,13 @@ const StoryView: React.FC<StoryViewProps> = ({ session, currentIndex, onSelectCh
           </div>
         )}
       </div>
-      <div className="flex-shrink-0 pt-6">
+      <div className="flex-shrink-0 pt-6 relative">
+        <NarrationStatusIndicator state={narrationState} t={t} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {currentStep.choices.map((choice, index) => {
             const isOptimistic = optimisticChoice === choice;
             const hasBeenChosen = currentStep.choiceMade === choice || (isLastStepInHistory && isOptimistic);
-            const isDisabled = gameState === 'LOADING';
+            const isDisabled = gameState === 'LOADING' || narrationState !== 'IDLE';
 
             const baseClasses = 'text-white font-bold py-3 px-4 rounded-lg transition-all duration-300 transform focus:outline-none focus:ring-2 focus:ring-amber-400 focus:ring-opacity-75 shadow-lg';
             const chosenClasses = 'bg-gradient-to-br from-green-600 to-emerald-700 ring-2 ring-yellow-300 scale-100';

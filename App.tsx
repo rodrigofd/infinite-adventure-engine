@@ -1,19 +1,18 @@
-
-
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom';
 import Sidebar from './components/Sidebar';
 import StoryView from './components/StoryView';
 import { GameState, StoryStep, GameSession } from './types';
 import { generateAdventureStart, generateNextStep, generateRandomPrompt, generateRandomVisualStylePrompt } from './services/geminiService';
-import { WandIcon, TrashIcon, SparklesIcon, HomeIcon, PlayIcon, SpeakerOnIcon, SpeakerOffIcon, PaintBrushIcon, ArrowDownTrayIcon, ArrowUpTrayIcon } from './components/Icons';
+import { WandIcon, TrashIcon, SparklesIcon, HomeIcon, PlayIcon, SpeakerOnIcon, SpeakerOffIcon, PaintBrushIcon, ArrowDownTrayIcon, ArrowUpTrayIcon, MicrophoneIcon } from './components/Icons';
 import LoadingSpinner from './components/LoadingSpinner';
 import { translations } from './lib/translations';
 import LanguageSelector from './components/LanguageSelector';
 import Tooltip, { TooltipData } from './components/Tooltip';
-import AudioManager from './components/AudioManager';
+import LiveNarrator, { NarrationState } from './components/LiveNarrator';
 
 const SESSIONS_KEY = 'infinite-adventure-sessions';
+const NARRATION_ENABLED_KEY = 'sagaforge-narration-enabled';
 
 // Let TypeScript know about the global localforage object from the CDN script
 declare const localforage: any;
@@ -48,17 +47,14 @@ const App: React.FC = () => {
   const [isGeneratingStyleIdea, setIsGeneratingStyleIdea] = useState(false);
   const [isCustomStyleAiGenerated, setIsCustomStyleAiGenerated] = useState(false);
 
+  // Narration State
   const [isNarrationEnabled, setIsNarrationEnabled] = useState(false);
-  const [musicVolume, setMusicVolume] = useState(0.3);
-  const [isMusicMuted, setIsMusicMuted] = useState(false);
+  const [narrationSettingsLoaded, setNarrationSettingsLoaded] = useState(false);
+  const [narrationState, setNarrationState] = useState<NarrationState>('IDLE');
+  const [clickedChoiceToNarrate, setClickedChoiceToNarrate] = useState<{ id: string; choice: string } | null>(null);
   const [initialLoadingMessage, setInitialLoadingMessage] = useState('');
+  const [optimisticChoice, setOptimisticChoice] = useState<string | null>(null);
 
-  // Audio state
-  const [hasInteracted, setHasInteracted] = useState(false);
-  const [showVolumeSlider, setShowVolumeSlider] = useState(false);
-  const musicButtonRef = useRef<HTMLButtonElement>(null);
-  const volumeSliderRef = useRef<HTMLDivElement>(null);
-  const [sliderPosition, setSliderPosition] = useState({ top: 0, right: 0 });
   const portalRoot = document.getElementById('portals');
 
 
@@ -76,22 +72,42 @@ const App: React.FC = () => {
   }, [language]);
   
 
-  // Load sessions from localForage on initial render
+  // Load settings and sessions from localForage on initial render
   useEffect(() => {
-    const loadSessions = async () => {
+    const loadData = async () => {
       try {
         if (typeof localforage !== 'undefined') {
-          const savedSessions = await localforage.getItem(SESSIONS_KEY);
+          const [savedSessions, savedNarration] = await Promise.all([
+            localforage.getItem(SESSIONS_KEY),
+            localforage.getItem(NARRATION_ENABLED_KEY)
+          ]);
+
           if (savedSessions && Array.isArray(savedSessions)) {
             setSessions(savedSessions);
           }
+          if (savedNarration !== null) {
+            setIsNarrationEnabled(savedNarration as boolean);
+          }
         }
       } catch (e) {
-        console.error("Failed to load sessions from localForage", e);
+        console.error("Failed to load data from localForage", e);
+      } finally {
+        setNarrationSettingsLoaded(true);
       }
     };
-    loadSessions();
+    loadData();
   }, []);
+
+  // Save narration setting to localforage
+  useEffect(() => {
+    if (narrationSettingsLoaded) {
+      if (typeof localforage !== 'undefined') {
+        localforage.setItem(NARRATION_ENABLED_KEY, isNarrationEnabled).catch((err: any) => {
+          console.error("Failed to save narration setting", err);
+        });
+      }
+    }
+  }, [isNarrationEnabled, narrationSettingsLoaded]);
 
   // Clear error/success messages after a delay
   useEffect(() => {
@@ -198,7 +214,6 @@ const App: React.FC = () => {
     }
     setGameState('LOADING');
     setError(null);
-    setHasInteracted(true); // Unlock audio
 
     let finalVisualStyle = '';
     if (visualStyleSelection === 'custom') {
@@ -247,7 +262,6 @@ const App: React.FC = () => {
       if (e.key === 'Escape') {
         setShowBranchConfirm(null);
         setSessionToDelete(null);
-        setShowVolumeSlider(false);
       }
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
         if (document.activeElement === promptTextareaRef.current || document.activeElement === customStyleTextareaRef.current) {
@@ -297,11 +311,20 @@ const App: React.FC = () => {
         setGameState('PLAYING');
     } finally {
         setShowBranchConfirm(null);
+        setOptimisticChoice(null);
     }
   }, [activeSession, language, t]);
 
-  const handleSelectChoice = useCallback((choice: string) => {
-    if (!activeSession) return;
+  const handleSelectChoice = useCallback((choice: string, source: 'click' | 'voice' = 'click') => {
+    if (!activeSession || gameState === 'LOADING' || narrationState !== 'IDLE') return;
+
+    if (currentStepIndex === activeSession.history.length - 1) {
+        setOptimisticChoice(choice);
+    }
+
+    if (source === 'click' && isNarrationEnabled) {
+      setClickedChoiceToNarrate({ id: crypto.randomUUID(), choice });
+    }
 
     const currentStep = activeSession.history[currentStepIndex];
     const isBranching = currentStep.choiceMade && currentStep.choiceMade !== choice;
@@ -312,7 +335,7 @@ const App: React.FC = () => {
         const historySlice = activeSession.history.slice(0, currentStepIndex + 1);
         processChoice(choice, historySlice);
     }
-  }, [activeSession, currentStepIndex, processChoice]);
+  }, [activeSession, currentStepIndex, processChoice, isNarrationEnabled, gameState, narrationState]);
   
   const confirmBranching = () => {
     if (showBranchConfirm && activeSession) {
@@ -324,7 +347,6 @@ const App: React.FC = () => {
   const handleResumeSession = (sessionId: string) => {
     const sessionToResume = sessions.find(s => s.id === sessionId);
     if (sessionToResume) {
-      setHasInteracted(true); // Unlock audio
       setLanguage(sessionToResume.language);
       setActiveSession(sessionToResume);
       setCurrentStepIndex(sessionToResume.history.length - 1);
@@ -460,36 +482,11 @@ const App: React.FC = () => {
     reader.readAsText(file);
   };
   
-  // Click outside handler for volume slider
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-        if (
-            showVolumeSlider &&
-            musicButtonRef.current && !musicButtonRef.current.contains(event.target as Node) &&
-            volumeSliderRef.current && !volumeSliderRef.current.contains(event.target as Node)
-        ) {
-            setShowVolumeSlider(false);
-        }
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [showVolumeSlider]);
-
-  const toggleVolumeSlider = () => {
-    if (!musicButtonRef.current) return;
-    const rect = musicButtonRef.current.getBoundingClientRect();
-    setSliderPosition({
-        top: rect.bottom + 8, // 8px margin
-        right: window.innerWidth - rect.right,
-    });
-    setShowVolumeSlider(prev => !prev);
-  };
-
 
   const renderSessionSelect = () => {
     const styleOptions = [
       ...predefinedStyles,
-      { id: 'custom', name: 'Custom', imageUrl: '/assets/style-custom.png' }
+      { id: 'custom', name: 'Custom', imageUrl: './assets/style-custom.png' }
     ];
 
     return (
@@ -498,7 +495,7 @@ const App: React.FC = () => {
                 <div className="absolute top-4 right-4 z-10">
                     <LanguageSelector language={language} setLanguage={setLanguage} />
                 </div>
-                <img src="/assets/adventure-gen-logo.png" alt="SagaForge Logo" className="w-48 mx-auto mb-2" />
+                <img src="./assets/adventure-gen-logo.png" alt="SagaForge Logo" className="w-48 mx-auto mb-2" />
                 <h1 className="text-4xl md:text-5xl font-bold text-white mb-2">{t('title')}</h1>
                 
                 <div className="my-8">
@@ -556,8 +553,19 @@ const App: React.FC = () => {
                     )}
                 </div>
                 
-                <h2 className="text-2xl font-bold text-teal-300 mb-4 mt-8">{t('startNew')}</h2>
-                <p className="text-lg text-slate-300 mb-6">{t('description')}</p>
+                <div className="flex justify-between items-center mb-4 mt-8">
+                    <h2 className="text-2xl font-bold text-teal-300">{t('startNew')}</h2>
+                     <button 
+                        onClick={() => setIsNarrationEnabled(!isNarrationEnabled)} 
+                        className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-all duration-300 ${isNarrationEnabled ? 'bg-teal-600 border-teal-500 text-white shadow-md' : 'bg-slate-700/80 border-slate-600 text-slate-300'} hover:border-amber-400 hover:text-white`} 
+                        title={t('narrate') as string}
+                    >
+                        {isNarrationEnabled ? <SpeakerOnIcon className="w-5 h-5" /> : <SpeakerOffIcon className="w-5 h-5" />}
+                        <span className="hidden sm:inline font-semibold">{t('narrate') as string}</span>
+                    </button>
+                </div>
+
+                <p className="text-lg text-slate-300 mb-6 text-left">{t('description')}</p>
                 <div className="relative w-full">
                     <textarea
                         ref={promptTextareaRef}
@@ -658,39 +666,45 @@ const App: React.FC = () => {
 
     return (
         <div className="flex flex-col w-full h-full max-w-7xl mx-auto">
-             <AudioManager 
-                mood={currentStep.mood}
-                volume={musicVolume}
-                isMuted={isMusicMuted}
-                hasInteracted={hasInteracted}
-            />
+             {isNarrationEnabled && (
+                <LiveNarrator
+                    storyStep={currentStep}
+                    language={language}
+                    onChoiceSelected={(choice) => handleSelectChoice(choice, 'voice')}
+                    onNarrationStateChange={setNarrationState}
+                    clickedChoiceToNarrate={clickedChoiceToNarrate}
+                    onError={(e) => {
+                        console.error("Narration error:", e);
+                        setError(t('errorNarration') as string);
+                        setIsNarrationEnabled(false); // Disable on error to prevent cycles
+                    }}
+                />
+            )}
             <header className="w-full flex justify-between items-center mb-4 flex-shrink-0 animate-fadeIn p-2 bg-slate-800/30 backdrop-blur-sm rounded-lg border border-slate-700">
                 <button onClick={() => { setActiveSession(null); setGameState('SESSION_SELECT'); }} className="flex items-center gap-2 bg-slate-800/50 border border-slate-700 px-3 py-2 rounded-lg hover:bg-slate-700 transition-colors" title={t('home') as string}>
                     <HomeIcon className="w-5 h-5 text-amber-400"/>
                     <span className="hidden md:inline font-semibold">{t('home') as string}</span>
                 </button>
                 <h1 className="text-xl font-bold text-amber-300 mx-4 text-center flex-grow hidden sm:block truncate" style={{textShadow: '1px 1px 2px #000'}}>
-                    {t('title') as string}
+                    {activeSession.title}
                 </h1>
                 <div className="flex items-center gap-2 md:gap-4">
                     <button 
                         onClick={() => setIsNarrationEnabled(!isNarrationEnabled)} 
-                        className={`flex items-center gap-2 px-3 py-2 rounded-lg border transition-all duration-300 ${isNarrationEnabled ? 'bg-teal-600 border-teal-500 text-white shadow-md' : 'bg-slate-700/80 border-slate-600 text-slate-300'} hover:border-amber-400 hover:text-white`} 
+                        className={`relative flex items-center gap-2 px-3 py-2 rounded-lg border transition-all duration-300 ${isNarrationEnabled ? 'bg-teal-600 border-teal-500 text-white shadow-md' : 'bg-slate-700/80 border-slate-600 text-slate-300'} hover:border-amber-400 hover:text-white`} 
                         title={t('narrate') as string}
                     >
                          { isNarrationEnabled ? <SpeakerOnIcon className="w-5 h-5" /> : <SpeakerOffIcon className="w-5 h-5" />}
                         <span className="hidden lg:inline font-semibold">{t('narrate') as string}</span>
+                        {isNarrationEnabled && narrationState !== 'IDLE' && (
+                           <span className="absolute -top-1 -right-1 flex h-4 w-4">
+                             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75"></span>
+                             <span className="relative inline-flex rounded-full h-4 w-4 bg-teal-500 justify-center items-center">
+                               {narrationState === 'LISTENING' && <MicrophoneIcon className="w-2.5 h-2.5" />}
+                             </span>
+                           </span>
+                        )}
                     </button>
-                    <div className="relative flex items-center">
-                        <button
-                            ref={musicButtonRef}
-                            onClick={toggleVolumeSlider}
-                            className="flex items-center gap-2 px-3 py-2 rounded-lg border transition-all duration-300 bg-slate-700/80 border-slate-600 text-slate-300 hover:border-amber-400 hover:text-white"
-                            title={t('toggleMusic') as string}
-                        >
-                            {isMusicMuted || musicVolume === 0 ? <SpeakerOffIcon className="w-5 h-5" /> : <SpeakerOnIcon className="w-5 h-5" />}
-                        </button>
-                    </div>
                     <LanguageSelector language={language} setLanguage={setLanguage} />
                 </div>
             </header>
@@ -719,13 +733,15 @@ const App: React.FC = () => {
                     onStepSelect={setCurrentStepIndex}
                 />
                 <StoryView
-                session={activeSession}
-                currentIndex={currentStepIndex}
-                onSelectChoice={handleSelectChoice}
-                onPrev={() => setCurrentStepIndex(i => Math.max(0, i-1))}
-                onNext={() => setCurrentStepIndex(i => Math.min(activeSession.history.length - 1, i+1))}
-                gameState={gameState}
-                t={t}
+                    session={activeSession}
+                    currentIndex={currentStepIndex}
+                    onSelectChoice={(choice) => handleSelectChoice(choice, 'click')}
+                    onPrev={() => setCurrentStepIndex(i => Math.max(0, i-1))}
+                    onNext={() => setCurrentStepIndex(i => Math.min(activeSession.history.length - 1, i+1))}
+                    gameState={gameState}
+                    narrationState={narrationState}
+                    optimisticChoice={optimisticChoice}
+                    t={t}
                 />
             </div>
         </div>
@@ -745,41 +761,6 @@ const App: React.FC = () => {
       <div className="w-full h-full flex-grow flex items-center justify-center max-w-7xl mx-auto">
         {gameState === 'SESSION_SELECT' || !activeSession ? renderSessionSelect() : renderGame()}
       </div>
-
-      {showVolumeSlider && portalRoot && ReactDOM.createPortal(
-        <div
-            ref={volumeSliderRef}
-            className="fixed p-2 bg-slate-800/80 backdrop-blur-sm border border-slate-600 rounded-lg z-50 animate-fadeIn origin-top-right"
-            style={{ top: `${sliderPosition.top}px`, right: `${sliderPosition.right}px` }}
-        >
-            <div className="flex items-center gap-4">
-                <button 
-                    onClick={() => setIsMusicMuted(!isMusicMuted)} 
-                    className="p-2 text-slate-300 hover:text-white hover:bg-slate-700 rounded-md"
-                >
-                    {isMusicMuted || musicVolume === 0 ? <SpeakerOffIcon className="w-5 h-5" /> : <SpeakerOnIcon className="w-5 h-5" />}
-                </button>
-                <div className="h-32 flex items-center justify-center">
-                    <input
-                        type="range"
-                        min="0"
-                        max="1"
-                        step="0.01"
-                        value={isMusicMuted ? 0 : musicVolume}
-                        onChange={(e) => {
-                            setMusicVolume(parseFloat(e.target.value));
-                            if (isMusicMuted) setIsMusicMuted(false);
-                            if (parseFloat(e.target.value) > 0 && isMusicMuted) setIsMusicMuted(false);
-                            if (parseFloat(e.target.value) === 0 && !isMusicMuted) setIsMusicMuted(true);
-                        }}
-                        className="w-4 h-28 bg-slate-600 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-6 [&::-webkit-slider-thumb]:h-6 [&::-webkit-slider-thumb]:bg-amber-400 [&::-webkit-slider-thumb]:rounded-full"
-                        style={{ writingMode: 'vertical-lr', direction: 'rtl' }}
-                    />
-                </div>
-            </div>
-        </div>,
-        portalRoot
-      )}
 
       {(error || importSuccessMessage) && (
         <div className="fixed bottom-4 right-4 z-[100] animate-fadeIn">

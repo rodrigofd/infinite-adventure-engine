@@ -265,19 +265,41 @@ export const generateSpeech = async (text: string): Promise<string> => {
 export const interpretUserChoice = async (
     speech: string,
     choices: string[],
+    storyText: string,
     language: 'en' | 'es' | 'pt'
 ): Promise<string> => {
     const prompt = {
-        en: `A user in a choose-your-own-adventure game said: "${speech}". Given the following choices, which one did they most likely pick? The choices are: [${choices.map(c => `"${c}"`).join(', ')}]. Your response MUST BE the exact text of one of the choices, or the word "UNCLEAR" if it's ambiguous or none of the choices match. Do not add any explanation or punctuation.`,
-        es: `Un usuario en un juego de 'elige tu propia aventura' dijo: "${speech}". Dadas las siguientes opciones, ¿cuál es más probable que haya elegido? Las opciones son: [${choices.map(c => `"${c}"`).join(', ')}]. Tu respuesta DEBE SER el texto exacto de una de las opciones, o la palabra "UNCLEAR" si es ambiguo o ninguna opción coincide. No agregues ninguna explicación ni puntuación.`,
-        pt: `Um usuário em um jogo de 'escolha sua própria aventura' disse: "${speech}". Dadas as seguintes opções, qual delas é mais provável que ele tenha escolhido? As opções são: [${choices.map(c => `"${c}"`).join(', ')}]. Sua resposta DEVE SER o texto exato de uma das opções, ou a palavra "UNCLEAR" se for ambíguo ou nenhuma das opções corresponder. Não adicione nenhuma explicação ou pontuação.`,
+        en: `You are an AI assistant in a choose-your-own-adventure game. Your task is to interpret the user's spoken response and match it to one of the available choices. Be flexible with phrasing.
+        
+Context: The current story scene is: "${storyText}"
+The user said: "${speech}"
+The available choices are: [${choices.map(c => `"${c}"`).join(', ')}]
+
+Which choice did the user most likely pick?
+Your response MUST BE the exact text of one of the choices, or the word "UNCLEAR" if it's ambiguous or none of the choices match. Do not add any explanation or punctuation.`,
+        es: `Eres un asistente de IA en un juego de 'elige tu propia aventura'. Tu tarea es interpretar la respuesta hablada del usuario y asociarla con una de las opciones disponibles. Sé flexible con la redacción.
+        
+Contexto: La escena actual de la historia es: "${storyText}"
+El usuario dijo: "${speech}"
+Las opciones disponibles son: [${choices.map(c => `"${c}"`).join(', ')}]
+
+¿Qué opción es más probable que el usuario haya elegido?
+Tu respuesta DEBE SER el texto exacto de una de las opciones, o la palabra "UNCLEAR" si es ambiguo o ninguna opción coincide. No agregues ninguna explicación ni puntuación.`,
+        pt: `Você é um assistente de IA em um jogo de 'escolha sua própria aventura'. Sua tarefa é interpretar a resposta falada do usuário e associá-la a uma das opções disponíveis. Seja flexível com a formulação.
+        
+Contexto: A cena atual da história é: "${storyText}"
+O usuário disse: "${speech}"
+As opções disponíveis são: [${choices.map(c => `"${c}"`).join(', ')}]
+
+Qual opção o usuário provavelmente escolheu?
+Sua resposta DEVE SER o texto exato de uma das opções, ou a palavra "UNCLEAR" se for ambíguo ou nenhuma das opções corresponder. Não adicione nenhuma explicação ou pontuação.`,
     }[language];
 
     const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: prompt,
         config: {
-            temperature: 0.2
+            temperature: 0.1
         }
     });
 

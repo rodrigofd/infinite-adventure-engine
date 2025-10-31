@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { GameState, GameSession } from '../types';
 import LoadingSpinner from './LoadingSpinner';
-import { ChevronLeftIcon, ChevronRightIcon, MicrophoneIcon, SpeakerOnIcon, SparklesIcon } from './Icons';
+import { ChevronDoubleRightIcon, ChevronLeftIcon, ChevronRightIcon, MicrophoneIcon, SpeakerOnIcon, SparklesIcon } from './Icons';
 import { NarrationState } from './LiveNarrator';
 
 
@@ -14,10 +14,11 @@ interface StoryViewProps {
   gameState: GameState;
   narrationState: NarrationState;
   optimisticChoice: string | null;
+  onSkipNarration: () => void;
   t: (key: string) => string | string[];
 }
 
-const NarrationStatusIndicator: React.FC<{ state: NarrationState, t: (key: string) => string | string[] }> = ({ state, t }) => {
+const NarrationStatusIndicator: React.FC<{ state: NarrationState, onSkip: () => void, t: (key: string) => string | string[] }> = ({ state, onSkip, t }) => {
   if (state === 'IDLE') return null;
 
   const statusConfig: Record<NarrationState, { icon: React.ReactNode; text: string }> = {
@@ -30,7 +31,7 @@ const NarrationStatusIndicator: React.FC<{ state: NarrationState, t: (key: strin
   const { icon, text } = statusConfig[state];
 
   return (
-    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-full max-w-xs mx-auto animate-fadeIn">
+    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-full max-w-md mx-auto animate-fadeIn">
       <div className="bg-slate-900/80 backdrop-blur-sm border border-teal-500/50 rounded-lg p-3 flex items-center justify-center gap-4 shadow-lg">
         {icon}
         <div className="flex items-center gap-1.5 h-6">
@@ -43,13 +44,18 @@ const NarrationStatusIndicator: React.FC<{ state: NarrationState, t: (key: strin
           ))}
         </div>
         <p className="text-teal-200 font-semibold w-28 text-center">{text}</p>
+        {state === 'NARRATING' && (
+          <button onClick={onSkip} title={t('skip') as string} className="bg-slate-700/50 hover:bg-slate-600/50 rounded-full p-2 text-teal-300 transition-colors">
+            <ChevronDoubleRightIcon className="w-5 h-5" />
+          </button>
+        )}
       </div>
     </div>
   );
 };
 
 
-const StoryView: React.FC<StoryViewProps> = ({ session, currentIndex, onSelectChoice, onPrev, onNext, gameState, narrationState, optimisticChoice, t }) => {
+const StoryView: React.FC<StoryViewProps> = ({ session, currentIndex, onSelectChoice, onPrev, onNext, gameState, narrationState, optimisticChoice, onSkipNarration, t }) => {
   const currentStep = session.history[currentIndex];
   const storyHistory = session.history;
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -126,7 +132,7 @@ const StoryView: React.FC<StoryViewProps> = ({ session, currentIndex, onSelectCh
         )}
       </div>
       <div className="flex-shrink-0 pt-6 relative">
-        <NarrationStatusIndicator state={narrationState} t={t} />
+        <NarrationStatusIndicator state={narrationState} onSkip={onSkipNarration} t={t} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {currentStep.choices.map((choice, index) => {
             const isOptimistic = optimisticChoice === choice;

@@ -37,3 +37,7 @@ export interface GameSession {
 }
 
 export type GameState = 'SESSION_SELECT' | 'PLAYING' | 'LOADING' | 'ERROR';
+
+export interface NarrationRef {
+  skip: () => void;
+}

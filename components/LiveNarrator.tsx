@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { GoogleGenAI } from '@google/genai';
-import { StoryStep } from '../types';
+import { StoryStep, NarrationRef } from '../types';
 import { generateSpeech, interpretUserChoice } from '../services/geminiService';
 import { decode, decodeAudioData } from '../lib/audioUtils';
 import { translations } from '../lib/translations';
@@ -74,18 +74,20 @@ declare global {
 interface LiveNarratorProps {
   storyStep: StoryStep;
   language: 'en' | 'es' | 'pt';
+  narrationSpeed: number;
   onChoiceSelected: (choice: string) => void;
   onNarrationStateChange: (state: NarrationState) => void;
   onError: (error: Error) => void;
   clickedChoiceToNarrate: { id: string; choice: string } | null;
 }
 
-const LiveNarrator: React.FC<LiveNarratorProps> = ({ storyStep, language, onChoiceSelected, onNarrationStateChange, onError, clickedChoiceToNarrate }) => {
+const LiveNarrator = forwardRef<NarrationRef, LiveNarratorProps>(({ storyStep, language, narrationSpeed, onChoiceSelected, onNarrationStateChange, onError, clickedChoiceToNarrate }, ref) => {
   const aiRef = useRef<GoogleGenAI | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const currentAudioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const speechRecognitionRef = useRef<SpeechRecognition | null>(null);
   const narrationStateRef = useRef<NarrationState>('IDLE');
+  const endOfSpeechTimeoutRef = useRef<number | null>(null);
 
 
   const [isInitialized, setIsInitialized] = useState(false);
@@ -105,15 +107,48 @@ const LiveNarrator: React.FC<LiveNarratorProps> = ({ storyStep, language, onChoi
 
   const stopAllAudio = useCallback(() => {
     if (currentAudioSourceRef.current) {
+      // We don't want onended to trigger the next step, so remove it before stopping
+      currentAudioSourceRef.current.onended = null;
       currentAudioSourceRef.current.stop();
       currentAudioSourceRef.current.disconnect();
       currentAudioSourceRef.current = null;
     }
   }, []);
 
+  useImperativeHandle(ref, () => ({
+    skip: () => {
+      // This will stop the audio, and because we cleared onended, it won't trigger resolution of the narrateText promise
+      stopAllAudio();
+      // Manually trigger the next part of the sequence.
+      // We create a new operation ID for this skip action.
+      const opId = `${storyStep.id}-skipped`;
+      operationIdRef.current = opId;
+      const runSkippedSequence = async () => {
+        try {
+          const promptText = `${t('voiceChoicePrompt')} ${storyStep.choices.join(', ')}`;
+          await narrateText(promptText, opId);
+          await startListeningForChoice(opId);
+        } catch (error) {
+           if (!(error as Error).message.includes('Operation cancelled')) {
+              onError(error as Error);
+           }
+        }
+      };
+      runSkippedSequence();
+    }
+  }));
+
+
   const cleanupSpeechRecognition = useCallback(() => {
+    if (endOfSpeechTimeoutRef.current) {
+        clearTimeout(endOfSpeechTimeoutRef.current);
+        endOfSpeechTimeoutRef.current = null;
+    }
     if (speechRecognitionRef.current) {
-      speechRecognitionRef.current.abort(); // Use abort to prevent onend from firing unnecessarily
+      speechRecognitionRef.current.onresult = null;
+      speechRecognitionRef.current.onerror = null;
+      speechRecognitionRef.current.onend = null;
+      speechRecognitionRef.current.abort(); 
       speechRecognitionRef.current = null;
     }
     updateNarrationState('IDLE');
@@ -136,6 +171,7 @@ const LiveNarrator: React.FC<LiveNarratorProps> = ({ storyStep, language, onChoi
         
         const source = audioContextRef.current.createBufferSource();
         source.buffer = audioBuffer;
+        source.playbackRate.value = narrationSpeed;
         source.connect(audioContextRef.current.destination);
         
         source.onended = () => {
@@ -159,14 +195,14 @@ const LiveNarrator: React.FC<LiveNarratorProps> = ({ storyStep, language, onChoi
         reject(err);
       }
     });
-  }, [stopAllAudio, updateNarrationState, onError]);
+  }, [stopAllAudio, updateNarrationState, onError, narrationSpeed]);
   
   const processUserSpeech = useCallback(async (speech: string, localOpId: string) => {
     if (operationIdRef.current !== localOpId) return;
     updateNarrationState('PROCESSING');
 
     try {
-        const result = await interpretUserChoice(speech, storyStep.choices, language);
+        const result = await interpretUserChoice(speech, storyStep.choices, storyStep.story, language);
         if (operationIdRef.current !== localOpId) return;
 
         if (result !== 'UNCLEAR') {
@@ -188,7 +224,7 @@ const LiveNarrator: React.FC<LiveNarratorProps> = ({ storyStep, language, onChoi
         if (operationIdRef.current === localOpId) onError(err as Error);
         updateNarrationState('IDLE');
     }
-  }, [storyStep.choices, language, retryCount, narrateText, onChoiceSelected, updateNarrationState, t, onError]);
+  }, [storyStep.choices, storyStep.story, language, retryCount, narrateText, onChoiceSelected, updateNarrationState, t, onError]);
 
 
   const startListeningForChoice = useCallback(async (localOpId: string): Promise<void> => {
@@ -205,50 +241,70 @@ const LiveNarrator: React.FC<LiveNarratorProps> = ({ storyStep, language, onChoi
         const recognition = new SpeechRecognition();
         speechRecognitionRef.current = recognition;
 
-        let choiceHasBeenSent = false;
+        let finalTranscript = '';
     
         const langMap = { en: 'en-US', es: 'es-ES', pt: 'pt-BR' };
         recognition.lang = langMap[language];
-        recognition.continuous = false;
-        recognition.interimResults = false;
+        recognition.continuous = true;
+        recognition.interimResults = true;
     
+        const stopListeningAndProcess = () => {
+            if (!speechRecognitionRef.current) return;
+            
+            const speechToProcess = finalTranscript.trim().toLowerCase();
+            cleanupSpeechRecognition();
+
+            if (!speechToProcess) {
+                // Fired on no-speech error or empty transcript
+                processUserSpeech("", localOpId).then(resolve).catch(reject);
+                return;
+            }
+
+            if (speechToProcess === (t('stopCommand') as string).toLowerCase()) {
+                return resolve();
+            }
+            if (operationIdRef.current === localOpId) {
+                processUserSpeech(speechToProcess, localOpId).then(resolve).catch(reject);
+            }
+        };
+
         recognition.onstart = () => {
             updateNarrationState('LISTENING');
         };
     
         recognition.onresult = (event: SpeechRecognitionEvent) => {
-            if (choiceHasBeenSent) return;
-            choiceHasBeenSent = true;
+            if (endOfSpeechTimeoutRef.current) {
+                clearTimeout(endOfSpeechTimeoutRef.current);
+            }
 
-            const speechResult = event.results[0][0].transcript.trim().toLowerCase();
-            if (speechResult === (t('stopCommand') as string).toLowerCase()) {
-                cleanupSpeechRecognition();
-                return resolve();
+            let interimTranscript = '';
+            for (let i = event.resultIndex; i < event.results.length; ++i) {
+                if (event.results[i].isFinal) {
+                    finalTranscript += event.results[i][0].transcript;
+                } else {
+                    interimTranscript += event.results[i][0].transcript;
+                }
             }
-            if (operationIdRef.current === localOpId) {
-                processUserSpeech(speechResult, localOpId).then(resolve).catch(reject);
-            }
+
+            // Wait for a pause of 1.2 seconds after the last word to finalize.
+            endOfSpeechTimeoutRef.current = window.setTimeout(stopListeningAndProcess, 1200);
         };
         
         recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-            if (choiceHasBeenSent) return;
-            choiceHasBeenSent = true;
-
             console.error('Speech recognition error:', event.error);
-            // Don't throw a major error for common cases like 'no-speech'
-            if (event.error !== 'aborted' && operationIdRef.current === localOpId) {
-                // Treat as an unclear choice to trigger retry logic
-                processUserSpeech("", localOpId).then(resolve).catch(reject);
+             if (event.error !== 'aborted' && operationIdRef.current === localOpId) {
+                stopListeningAndProcess(); // Treat errors like 'no-speech' as a chance to retry
             } else {
                 reject(new Error(event.error));
             }
         };
     
         recognition.onend = () => {
+             // onend can be called by .stop(), .abort(), or by the browser itself.
+             // We only want to resolve here if it wasn't handled by a result or error already.
             if (speechRecognitionRef.current === recognition) {
                 speechRecognitionRef.current = null;
-                // If we are still in listening state, it means no result was processed.
-                if (narrationStateRef.current === 'LISTENING') {
+                 if (narrationStateRef.current === 'LISTENING') {
                     updateNarrationState('IDLE');
                 }
                 resolve();
@@ -332,6 +388,6 @@ const LiveNarrator: React.FC<LiveNarratorProps> = ({ storyStep, language, onChoi
   }, []);
 
   return null; // This is a headless component
-};
+});
 
 export default LiveNarrator;

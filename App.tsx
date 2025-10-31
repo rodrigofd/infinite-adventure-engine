@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import ReactDOM from 'react-dom';
 import Sidebar from './components/Sidebar';
 import StoryView from './components/StoryView';
-import { GameState, StoryStep, GameSession } from './types';
+import { GameState, StoryStep, GameSession, NarrationRef } from './types';
 import { generateAdventureStart, generateNextStep, generateRandomPrompt, generateRandomVisualStylePrompt } from './services/geminiService';
 import { WandIcon, TrashIcon, SparklesIcon, HomeIcon, PlayIcon, SpeakerOnIcon, SpeakerOffIcon, PaintBrushIcon, ArrowDownTrayIcon, ArrowUpTrayIcon, MicrophoneIcon } from './components/Icons';
 import LoadingSpinner from './components/LoadingSpinner';
@@ -13,6 +13,8 @@ import LiveNarrator, { NarrationState } from './components/LiveNarrator';
 
 const SESSIONS_KEY = 'infinite-adventure-sessions';
 const NARRATION_ENABLED_KEY = 'sagaforge-narration-enabled';
+const NARRATION_SPEED_KEY = 'sagaforge-narration-speed';
+const NARRATION_SPEEDS = [1, 1.25, 1.5];
 
 // Let TypeScript know about the global localforage object from the CDN script
 declare const localforage: any;
@@ -49,12 +51,14 @@ const App: React.FC = () => {
 
   // Narration State
   const [isNarrationEnabled, setIsNarrationEnabled] = useState(false);
-  const [narrationSettingsLoaded, setNarrationSettingsLoaded] = useState(false);
+  const [narrationSpeed, setNarrationSpeed] = useState(1);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [narrationState, setNarrationState] = useState<NarrationState>('IDLE');
   const [clickedChoiceToNarrate, setClickedChoiceToNarrate] = useState<{ id: string; choice: string } | null>(null);
   const [initialLoadingMessage, setInitialLoadingMessage] = useState('');
   const [optimisticChoice, setOptimisticChoice] = useState<string | null>(null);
 
+  const narratorRef = useRef<NarrationRef>(null);
   const portalRoot = document.getElementById('portals');
 
 
@@ -77,9 +81,10 @@ const App: React.FC = () => {
     const loadData = async () => {
       try {
         if (typeof localforage !== 'undefined') {
-          const [savedSessions, savedNarration] = await Promise.all([
+          const [savedSessions, savedNarration, savedSpeed] = await Promise.all([
             localforage.getItem(SESSIONS_KEY),
-            localforage.getItem(NARRATION_ENABLED_KEY)
+            localforage.getItem(NARRATION_ENABLED_KEY),
+            localforage.getItem(NARRATION_SPEED_KEY)
           ]);
 
           if (savedSessions && Array.isArray(savedSessions)) {
@@ -88,26 +93,32 @@ const App: React.FC = () => {
           if (savedNarration !== null) {
             setIsNarrationEnabled(savedNarration as boolean);
           }
+          if (savedSpeed !== null && NARRATION_SPEEDS.includes(savedSpeed as number)) {
+            setNarrationSpeed(savedSpeed as number);
+          }
         }
       } catch (e) {
         console.error("Failed to load data from localForage", e);
       } finally {
-        setNarrationSettingsLoaded(true);
+        setSettingsLoaded(true);
       }
     };
     loadData();
   }, []);
 
-  // Save narration setting to localforage
+  // Save narration settings to localforage
   useEffect(() => {
-    if (narrationSettingsLoaded) {
+    if (settingsLoaded) {
       if (typeof localforage !== 'undefined') {
         localforage.setItem(NARRATION_ENABLED_KEY, isNarrationEnabled).catch((err: any) => {
           console.error("Failed to save narration setting", err);
         });
+        localforage.setItem(NARRATION_SPEED_KEY, narrationSpeed).catch((err: any) => {
+          console.error("Failed to save narration speed", err);
+        });
       }
     }
-  }, [isNarrationEnabled, narrationSettingsLoaded]);
+  }, [isNarrationEnabled, narrationSpeed, settingsLoaded]);
 
   // Clear error/success messages after a delay
   useEffect(() => {
@@ -482,6 +493,11 @@ const App: React.FC = () => {
     reader.readAsText(file);
   };
   
+  const handleCycleNarrationSpeed = () => {
+    const currentIndex = NARRATION_SPEEDS.indexOf(narrationSpeed);
+    const nextIndex = (currentIndex + 1) % NARRATION_SPEEDS.length;
+    setNarrationSpeed(NARRATION_SPEEDS[nextIndex]);
+  };
 
   const renderSessionSelect = () => {
     const styleOptions = [
@@ -668,8 +684,10 @@ const App: React.FC = () => {
         <div className="flex flex-col w-full h-full max-w-7xl mx-auto">
              {isNarrationEnabled && (
                 <LiveNarrator
+                    ref={narratorRef}
                     storyStep={currentStep}
                     language={language}
+                    narrationSpeed={narrationSpeed}
                     onChoiceSelected={(choice) => handleSelectChoice(choice, 'voice')}
                     onNarrationStateChange={setNarrationState}
                     clickedChoiceToNarrate={clickedChoiceToNarrate}
@@ -689,6 +707,15 @@ const App: React.FC = () => {
                     {activeSession.title}
                 </h1>
                 <div className="flex items-center gap-2 md:gap-4">
+                    {isNarrationEnabled && (
+                         <button
+                            onClick={handleCycleNarrationSpeed}
+                            className="bg-slate-700/80 border border-slate-600 text-slate-300 hover:text-white px-3 py-2 rounded-lg transition-colors hover:border-amber-400"
+                            title={`${t('speed')} ${narrationSpeed}x`}
+                        >
+                            <span className="font-semibold">{narrationSpeed}x</span>
+                        </button>
+                    )}
                     <button 
                         onClick={() => setIsNarrationEnabled(!isNarrationEnabled)} 
                         className={`relative flex items-center gap-2 px-3 py-2 rounded-lg border transition-all duration-300 ${isNarrationEnabled ? 'bg-teal-600 border-teal-500 text-white shadow-md' : 'bg-slate-700/80 border-slate-600 text-slate-300'} hover:border-amber-400 hover:text-white`} 
@@ -741,6 +768,7 @@ const App: React.FC = () => {
                     gameState={gameState}
                     narrationState={narrationState}
                     optimisticChoice={optimisticChoice}
+                    onSkipNarration={() => narratorRef.current?.skip()}
                     t={t}
                 />
             </div>

@@ -64,6 +64,8 @@ export const translations = {
     anime: "Anime",
     pixel: "Pixel Art",
     custom: "Custom",
+    skip: "Skip",
+    speed: "Speed",
   },
   es: {
     title: "ForjaSagas",
@@ -130,10 +132,12 @@ export const translations = {
     anime: "Anime",
     pixel: "Pixel Art",
     custom: "Personalizado",
+    skip: "Saltar",
+    speed: "Velocidad",
   },
   pt: {
     title: "ForjaSagas",
-    description: "Descreve a tua personagem e o mundo que queres explorar. A IA irá tecer uma história única para ti.",
+    description: "Descreve a tua personagem e o mundo que queres explorar. A IA irá tecer una história única para ti.",
     placeholder: "Ex: Um pirata espacial grisalho numa nave estelar abandonada, à procura de um tesouro alienígena.",
     beginAdventure: "Começa a Tua Aventura",
     inventory: "Inventário",
@@ -196,5 +200,7 @@ export const translations = {
     anime: "Anime",
     pixel: "Pixel Art",
     custom: "Personalizado",
+    skip: "Saltar",
+    speed: "Velocidade",
   }
 };
